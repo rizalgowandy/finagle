@@ -2,7 +2,7 @@ package com.twitter.finagle.mux.pushsession
 
 import com.twitter.conversions.StorageUnitOps._
 import com.twitter.conversions.DurationOps._
-import com.twitter.finagle.Mux.param.{CompressionPreferences, MaxFrameSize, OppTls}
+import com.twitter.finagle.Mux.param.{CompressionPreferences, MaxFrameSize}
 import com.twitter.finagle.mux.transport.CompressionNegotiation
 import com.twitter.finagle.Stack.Params
 import com.twitter.finagle.pushsession.PushChannelHandle
@@ -10,16 +10,19 @@ import com.twitter.finagle.pushsession.utils.MockChannelHandle
 import com.twitter.finagle.mux.Handshake.{CanTinitMsg, Headers, TinitTag}
 import com.twitter.finagle.mux.Request
 import com.twitter.finagle.mux.transport.Message.Tdispatch
-import com.twitter.finagle.mux.transport.{Message, MuxFramer, OpportunisticTls}
+import com.twitter.finagle.mux.transport.{Message, MuxFramer}
+import com.twitter.finagle.param.OppTls
+import com.twitter.finagle.ssl.OpportunisticTls
 import com.twitter.finagle.stats.{InMemoryStatsReceiver, NullStatsReceiver}
 import com.twitter.finagle.{ChannelClosedException, Failure, FailureFlags, Mux, Path, liveness}
 import com.twitter.io.{Buf, ByteReader}
 import com.twitter.util.{Await, Awaitable, Future, Promise, Try}
 import org.scalactic.source.Position
 import org.scalatestplus.mockito.MockitoSugar
-import org.scalatest.{FunSuite, Tag}
+import org.scalatest.Tag
+import org.scalatest.funsuite.AnyFunSuite
 
-class MuxClientNegotiatingSessionTest extends FunSuite with MockitoSugar {
+class MuxClientNegotiatingSessionTest extends AnyFunSuite with MockitoSugar {
   import MuxClientNegotiatingSession.PushSessionQueue
 
   // turn off failure detector since we don't need it for these tests.
@@ -310,6 +313,7 @@ class MuxClientNegotiatingSessionTest extends FunSuite with MockitoSugar {
     handle.serialExecutor.executeAll()
     await(sessionF)
     assert(!stats.gauges.contains(Seq("negotiating")))
+    assert(!stats.gauges.contains(Seq("negotiating_queue_size")))
 
     assert(handle.currentSession.isInstanceOf[MuxClientSession])
   }

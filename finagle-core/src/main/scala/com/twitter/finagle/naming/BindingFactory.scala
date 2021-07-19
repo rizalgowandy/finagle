@@ -95,9 +95,9 @@ class BindingFactory[Req, Rep] private[naming] (
 
   private[this] val dtabCache = {
     val newFactory: Dtabs => ServiceFactory[Req, Rep] = {
-      case Dtabs(baseDtab, localDtab) =>
+      case Dtabs(baseDtab, limitedDtab, localDtab) =>
         val dynFactory = new DynNameFactory(
-          NameInterpreter.bind(baseDtab ++ localDtab, path),
+          NameInterpreter.bind(baseDtab ++ limitedDtab ++ localDtab, path),
           nameTreeCache,
           statsReceiver = statsReceiver
         )
@@ -124,7 +124,8 @@ class BindingFactory[Req, Rep] private[naming] (
               // we don't have the dtabs handy at the point we throw
               // the exception; fill them in on the way out
               case e: NoBrokersAvailableException =>
-                Future.exception(new NoBrokersAvailableException(e.name, baseDtab, localDtab))
+                Future.exception(
+                  new NoBrokersAvailableException(e.name, baseDtab, localDtab, limitedDtab))
             }
           }
         }
@@ -140,12 +141,12 @@ class BindingFactory[Req, Rep] private[naming] (
   }
 
   def apply(conn: ClientConnection): Future[Service[Req, Rep]] =
-    dtabCache(Dtabs(baseDtab(), Dtab.local), conn)
+    dtabCache(Dtabs(baseDtab(), Dtab.limited, Dtab.local), conn)
 
   def close(deadline: Time): Future[Unit] =
     Closable.sequence(dtabCache, nameTreeCache, nameCache).close(deadline)
 
-  override def status: Status = dtabCache.status(Dtabs(baseDtab(), Dtab.local))
+  override def status: Status = dtabCache.status(Dtabs(baseDtab(), Dtab.limited, Dtab.local))
 }
 
 object BindingFactory {
@@ -155,10 +156,11 @@ object BindingFactory {
   private[finagle] val NamerPathAnnotationKey = "clnt/namer.path"
   private[finagle] val DtabBaseAnnotationKey = "clnt/namer.dtab.base"
 
-  private case class Dtabs(base: Dtab, local: Dtab) extends CachedHashCode.ForClass {
+  private case class Dtabs(base: Dtab, limited: Dtab, local: Dtab) extends CachedHashCode.ForClass {
     override protected def computeHashCode: Int = {
       var hash = 1
       hash = 31 * hash + base.hashCode
+      hash = 31 * hash + limited.hashCode
       hash = 31 * hash + local.hashCode
       hash
     }
@@ -172,11 +174,11 @@ object BindingFactory {
    * [[com.twitter.finagle.naming.BindingFactory]] with a destination
    * [[com.twitter.finagle.Name]] to bind.
    */
-  private[finagle] case class Dest(dest: Name) {
+  case class Dest(dest: Name) {
     def mk(): (Dest, Stack.Param[Dest]) =
       (this, Dest.param)
   }
-  private[finagle] object Dest {
+  object Dest {
     implicit val param = Stack.Param(Dest(Name.Path(Path.read("/$/fail"))))
   }
 
@@ -257,12 +259,12 @@ object BindingFactory {
         val displayed = displayFn(bound)
         val statsWithBoundName = new StatsReceiverProxy {
           protected def self: StatsReceiver = stats
-          override def stat(schema: HistogramSchema): Stat =
-            stats.stat(HistogramSchema(schema.metricBuilder.withIdentifier(Some(displayed))))
-          override def counter(schema: CounterSchema): Counter =
-            stats.counter(CounterSchema(schema.metricBuilder.withIdentifier(Some(displayed))))
-          override def addGauge(schema: GaugeSchema)(f: => Float): Gauge =
-            stats.addGauge(GaugeSchema(schema.metricBuilder.withIdentifier(Some(displayed))))(f)
+          override def stat(metricBuilder: MetricBuilder): Stat =
+            stats.stat(metricBuilder.withIdentifier(Some(displayed)))
+          override def counter(metricBuilder: MetricBuilder): Counter =
+            stats.counter(metricBuilder.withIdentifier(Some(displayed)))
+          override def addGauge(metricBuilder: MetricBuilder)(f: => Float): Gauge =
+            stats.addGauge(metricBuilder.withIdentifier(Some(displayed)))(f)
         }
 
         val updatedParams =
@@ -275,12 +277,16 @@ object BindingFactory {
             LoadBalancerFactory.ErrorLabel(errorLabel) +
             param.Stats(statsWithBoundName)
 
+        val forceWithDtab: Boolean = params[EagerConnections].withForceDtab
+
         // Explicitly disable `EagerConnections` if (1) `eagerlyConnect` is false, indicating that
         // the feature was explicitly disabled or the underlying balancer does not support the eager connections
-        // feature or (2) If request-level dtab overrides are present due to their unpredictable nature,
-        // resulting in wasteful connections.
+        // feature or (2) If request-level dtab overrides are due to their unpredictable nature,
+        // resulting in wasteful connections. The second condition applies only if
+        // EagerConnectionsType.ForceWithDtab is false.
         val finalParams =
-          if (!eagerlyConnect || !Dtab.local.isEmpty) updatedParams + EagerConnections(false)
+          if (!eagerlyConnect || (!forceWithDtab && !(Dtab.local.isEmpty && Dtab.limited.isEmpty)))
+            updatedParams + EagerConnections(false)
           else updatedParams
 
         val client = next.make(finalParams)
@@ -288,7 +294,7 @@ object BindingFactory {
       }
 
       val factory = dest match {
-        case bound @ Name.Bound(addr) => newStack(label, bound)
+        case bound @ Name.Bound(_) => newStack(label, bound)
 
         case Name.Path(path) =>
           val BaseDtab(baseDtab) = params[BaseDtab]

@@ -30,7 +30,9 @@ object includeEmptyHistograms
 /**
  * Allows for customization of how stat names get formatted.
  */
-private[finagle] sealed trait StatsFormatter {
+private[twitter] sealed trait StatsFormatter {
+
+  val histogramSeparator = "."
 
   def apply(values: SampledValues): Map[String, Number] = {
     val results = new mutable.HashMap[String, Number]()
@@ -41,9 +43,9 @@ private[finagle] sealed trait StatsFormatter {
     values.histograms.foreach {
       case (name, snapshot) =>
         val count = snapshot.count
-        results += histoName(name, "count") -> count
+        results += histoName(name, labelCount) -> count
         if (count > 0 || includeEmpty) {
-          results += histoName(name, "sum") -> snapshot.sum
+          results += histoName(name, labelSum) -> snapshot.sum
           results += histoName(name, labelAverage) -> snapshot.average
           results += histoName(name, labelMin) -> snapshot.min
           results += histoName(name, labelMax) -> snapshot.max
@@ -64,22 +66,29 @@ private[finagle] sealed trait StatsFormatter {
    * @param component a single part of this histogram, for example the average,
    *                  count, or a percentile.
    */
-  protected def histoName(name: String, component: String): String
+  private[twitter] final def histoName(name: String, component: String): String =
+    s"${name}$histogramSeparator$component"
+
+  /** Label applied for the number of times a histogram was reported */
+  private[twitter] final val labelCount: String = "count"
+
+  /** Label applied for sum of the reported values */
+  private[twitter] final val labelSum: String = "sum"
 
   /** Label applied for a given percentile, `p`, of a histogram */
-  protected def labelPercentile(p: Double): String
+  private[twitter] def labelPercentile(p: Double): String
 
   /** Label applied for the minimum of a histogram */
-  protected def labelMin: String
+  private[twitter] def labelMin: String
 
   /** Label applied for the maximum of a histogram */
-  protected def labelMax: String
+  private[twitter] def labelMax: String
 
   /** Label applied for the average of a histogram */
-  protected def labelAverage: String
+  private[twitter] def labelAverage: String
 }
 
-private[finagle] object StatsFormatter {
+private[twitter] object StatsFormatter {
 
   /**
    * Uses the global flag, [[format]], to select the formatter used.
@@ -97,10 +106,7 @@ private[finagle] object StatsFormatter {
    * See Commons Metrics' `Metrics.sample()`.
    */
   object CommonsMetrics extends StatsFormatter {
-    protected def histoName(name: String, component: String): String =
-      s"$name.$component"
-
-    protected def labelPercentile(p: Double): String = {
+    def labelPercentile(p: Double): String = {
       // this has a strange quirk that p999 gets formatted as p9990
       // Round for precision issues; e.g. 0.9998999... converts to "p9998" with a direct int cast.
       val gname: String = "p" + (p * 10000).round
@@ -111,11 +117,11 @@ private[finagle] object StatsFormatter {
       }
     }
 
-    protected def labelMin: String = "min"
+    def labelMin: String = "min"
 
-    protected def labelMax: String = "max"
+    def labelMax: String = "max"
 
-    protected def labelAverage: String = "avg"
+    def labelAverage: String = "avg"
   }
 
   /**
@@ -124,10 +130,7 @@ private[finagle] object StatsFormatter {
    * See Ostrich's `Distribution.toMap`.
    */
   object Ostrich extends StatsFormatter {
-    protected def histoName(name: String, component: String): String =
-      s"$name.$component"
-
-    protected def labelPercentile(p: Double): String = {
+    def labelPercentile(p: Double): String = {
       p match {
         case 0.5d => "p50"
         case 0.9d => "p90"
@@ -141,11 +144,11 @@ private[finagle] object StatsFormatter {
       }
     }
 
-    protected def labelMin: String = "minimum"
+    def labelMin: String = "minimum"
 
-    protected def labelMax: String = "maximum"
+    def labelMax: String = "maximum"
 
-    protected def labelAverage: String = "average"
+    def labelAverage: String = "average"
   }
 
   /**
@@ -187,16 +190,15 @@ private[finagle] object StatsFormatter {
       }
     }
 
-    protected def histoName(name: String, component: String): String =
-      s"${name}_$component"
+    override val histogramSeparator: String = "_"
 
-    protected def labelPercentile(p: Double): String =
+    def labelPercentile(p: Double): String =
       s"${p * 100}_percentile".replace(".", "_")
 
-    protected def labelMin: String = "min"
+    def labelMin: String = "min"
 
-    protected def labelMax: String = "max"
+    def labelMax: String = "max"
 
-    protected def labelAverage: String = "avg"
+    def labelAverage: String = "avg"
   }
 }

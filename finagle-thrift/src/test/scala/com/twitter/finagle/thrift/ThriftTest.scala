@@ -1,11 +1,11 @@
 package com.twitter.finagle.thrift
 
 import com.twitter.finagle._
-import com.twitter.finagle.builder.{ClientBuilder, ServerBuilder}
+import com.twitter.finagle.builder.ClientBuilder
 import com.twitter.finagle.tracing.{BufferingTracer, DefaultTracer, Trace}
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}
 import org.apache.thrift.protocol._
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 import scala.collection.mutable
 import scala.language.reflectiveCalls
 import scala.reflect.ClassTag
@@ -13,7 +13,7 @@ import scala.reflect.ClassTag
 /**
  * A test mixin to test all combinations of servers, clients and protocols.
  */
-trait ThriftTest { self: FunSuite =>
+trait ThriftTest { self: AnyFunSuite =>
   type Iface <: AnyRef
   def ifaceManifest: ClassTag[Iface]
   val processor: Iface
@@ -53,22 +53,6 @@ trait ThriftTest { self: FunSuite =>
   ): Unit = {
     () // noop
   }
-
-  private val newBuilderServer = (protocolFactory: TProtocolFactory) =>
-    new {
-      val server = ServerBuilder()
-        .stack(Thrift.server.withProtocolFactory(protocolFactory))
-        .bindTo(new InetSocketAddress(loopback, 0))
-        .name("thriftserver")
-        .tracer(DefaultTracer)
-        .build(ifaceToService(processor, RichServerParam(protocolFactory)))
-
-      val boundAddr = server.boundAddress
-
-      def close(): Unit = {
-        server.close()
-      }
-    }
 
   private val newBuilderClient = (
     protocolFactory: TProtocolFactory,
@@ -160,7 +144,6 @@ trait ThriftTest { self: FunSuite =>
   )
 
   private val servers = Map[String, NewServer](
-    "builder" -> newBuilderServer,
     "api" -> newAPIServer()
   )
 

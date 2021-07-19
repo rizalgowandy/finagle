@@ -35,6 +35,14 @@ If you have any questions or run into any problems, please create
 an issue here, chat with us in [gitter](https://gitter.im/twitter/finagle), or email
 the Finaglers [mailing list](https://groups.google.com/forum/#!forum/finaglers).
 
+### 3rd party upgrades
+
+We upgrade the following 3rd party libraries/tools at least once every 3 months:
+* [sbt](https://github.com/sbt/sbt)
+* [Netty](https://github.com/netty/netty)
+* [Jackson](https://github.com/FasterXML/jackson)
+* [Caffeine](https://github.com/ben-manes/caffeine)
+
 ## Workflow
 
 The workflow that we support:
@@ -135,7 +143,7 @@ in doubt, look around the codebase and see how it's done elsewhere.
 
 ## Issues
 
-When creating an issue please try to ahere to the following format:
+When creating an issue please try to adhere to the following format:
 
     module-name: One line summary of the issue (less than 72 characters)
 
@@ -249,7 +257,7 @@ requests that improve the existing Scaladocs!
 [6]: https://www.sphinx-doc.org/en/master/usage/installation.html
 [7]: http://docutils.sourceforge.net/rst.html
 [8]: https://docs.scala-lang.org/style/scaladoc.html
-[9]: https://github.com/twitter/finagle/blob/master/finagle-core/src/test/java/com/twitter/finagle/AddrCompilationTest.java
+[9]: https://github.com/twitter/finagle/blob/release/finagle-core/src/test/java/com/twitter/finagle/AddrCompilationTest.java
 [es]: https://twitter.github.io/effectivescala/
 [funsuite]: https://www.scalatest.org/getting_started_with_fun_suite
 [sbt]: https://www.scala-sbt.org/

@@ -2,11 +2,12 @@ package com.twitter.finagle.mysql
 
 import com.twitter.finagle.mysql.Parameter.NullParameter
 import com.twitter.finagle.mysql.transport.MysqlBuf
-import java.sql.{Date => SQLDate, Timestamp}
+import com.twitter.io.Buf
+import java.sql.{Timestamp, Date => SQLDate}
 import java.util.{Calendar, Date}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class SimpleCommandRequestTest extends FunSuite {
+class SimpleCommandRequestTest extends AnyFunSuite {
   test("encode") {
     val bytes = "table".getBytes
     val cmd = 0x00
@@ -17,7 +18,7 @@ class SimpleCommandRequestTest extends FunSuite {
   }
 }
 
-class SslConnectionRequestTest extends FunSuite {
+class SslConnectionRequestTest extends AnyFunSuite {
   val clientCapabilities: Capability =
     Capability.baseCapabilities + Capability.ConnectWithDB + Capability.FoundRows
   val sslClientCapabilities: Capability = clientCapabilities + Capability.SSL
@@ -57,7 +58,7 @@ class SslConnectionRequestTest extends FunSuite {
 
 }
 
-abstract class HandshakeResponseTest extends FunSuite {
+abstract class HandshakeResponseTest extends AnyFunSuite {
   val username = Some("username")
   val password = Some("password")
   val database = Some("test")
@@ -112,7 +113,8 @@ class PlainHandshakeResponseTest extends HandshakeResponseTest {
       salt,
       serverCapabilities(),
       MysqlCharset.Utf8_general_ci,
-      maxPacketSize
+      maxPacketSize,
+      enableCachingSha2PasswordAuth = false
     )
 }
 
@@ -132,7 +134,8 @@ class SecureHandshakeResponseTest extends HandshakeResponseTest {
       salt,
       serverCapabilities(),
       MysqlCharset.Utf8_general_ci,
-      maxPacketSize
+      maxPacketSize,
+      enableCachingSha2PasswordAuth = false
     )
 
   test("Fails without client SSL capability") {
@@ -145,7 +148,8 @@ class SecureHandshakeResponseTest extends HandshakeResponseTest {
         salt,
         serverCapabilities(),
         MysqlCharset.Utf8_general_ci,
-        maxPacketSize
+        maxPacketSize,
+        enableCachingSha2PasswordAuth = false
       )
     }
   }
@@ -160,13 +164,59 @@ class SecureHandshakeResponseTest extends HandshakeResponseTest {
         salt,
         serverCapabilities() - Capability.SSL,
         MysqlCharset.Utf8_general_ci,
-        maxPacketSize
+        maxPacketSize,
+        enableCachingSha2PasswordAuth = false
       )
     }
   }
 }
 
-class ExecuteRequestTest extends FunSuite {
+class AuthSwitchResponseTest extends AnyFunSuite {
+  val password = Some("password")
+  val salt =
+    Array[Byte](70, 38, 43, 66, 74, 48, 79, 126, 76, 66, 70, 118, 67, 40, 63, 68, 120, 80, 103, 54)
+  val charset = 255.toShort
+
+  val req = AuthSwitchResponse(seqNum = 1.toShort, password, salt, charset, withSha256 = false)
+  val br = MysqlBuf.reader(req.toPacket.body)
+
+  test("encode password") {
+    assert(br.readNullTerminatedBytes() === req.hashPassword)
+  }
+}
+
+class AuthMoreDataToServerTest extends AnyFunSuite {
+  test("AuthMoreData request public key") {
+    val req = PlainAuthMoreDataToServer(seqNum = 1.toShort, NeedPublicKey)
+    val br = MysqlBuf.reader(req.toPacket.body)
+
+    assert(br.readByte() == NeedPublicKey.moreDataByte)
+  }
+
+  test("AuthMoreData fast auth success") {
+    val req = PlainAuthMoreDataToServer(seqNum = 1.toShort, FastAuthSuccess)
+    val br = MysqlBuf.reader(req.toPacket.body)
+
+    assert(br.readByte() == FastAuthSuccess.moreDataByte)
+  }
+
+  test("AuthMoreData perform full auth") {
+    val req = PlainAuthMoreDataToServer(seqNum = 1.toShort, PerformFullAuth)
+    val br = MysqlBuf.reader(req.toPacket.body)
+
+    assert(br.readByte == PerformFullAuth.moreDataByte)
+  }
+
+  test("AuthMoreData with password auth data") {
+    val authData = Array[Byte](70, 38, 43, 66, 74, 48, 79, 126, 76, 66)
+    val req = PasswordAuthMoreDataToServer(seqNum = 1.toShort, PerformFullAuth, authData)
+    val br = MysqlBuf.reader(req.toPacket.body)
+
+    assert(Buf.ByteArray.Owned.extract(br.readBytes(10)).sameElements(authData))
+  }
+}
+
+class ExecuteRequestTest extends AnyFunSuite {
   test("null values") {
     val numOfParams = 18
     val nullParams: Array[Parameter] = Array.fill(numOfParams)(null)

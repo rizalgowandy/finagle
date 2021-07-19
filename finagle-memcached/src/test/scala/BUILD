@@ -11,6 +11,7 @@ scala_library(
         name = "finagle-memcached-testutils",
         repo = artifactory,
     ),
+    tags = ["bazel-compatible"],
     dependencies = [
         "finagle/finagle-core/src/main",
         "finagle/finagle-memcached/src/main/scala",
@@ -22,7 +23,10 @@ junit_tests(
     name = "scala",
     sources = ["**/*.scala"] + exclude_globs(EXTERNAL_SOURCES),
     compiler_option_sets = ["fatal_warnings"],
-    tags = ["known-jdk11-failure:VM-4210"],
+    tags = [
+        "bazel-compatible",
+        "known-jdk11-failure:VM-4210",
+    ],
     dependencies = [
         ":external",
         "3rdparty/jvm/com/fasterxml/jackson/core:jackson-databind",
@@ -40,7 +44,6 @@ junit_tests(
         "finagle/finagle-memcached/src/test/resources",
         "finagle/finagle-partitioning/src/main/scala",
         "finagle/finagle-serversets",
-        "finagle/finagle-toggle/src/main/scala",
         "util/util-core:scala",
         "util/util-hashing",
         "util/util-registry/src/main/scala",

@@ -58,11 +58,12 @@ trait ListeningStackServer[Req, Rep, This <: ListeningStackServer[Req, Rep, This
       private[this] val serverLabel = ServerRegistry.nameOf(addr).getOrElse(label)
 
       private[this] val statsReceiver =
-        if (serverLabel.isEmpty) new RoleConfiguredStatsReceiver(stats, Server)
+        if (serverLabel.isEmpty) RoleConfiguredStatsReceiver(stats, Server)
         else
-          new RoleConfiguredStatsReceiver(
+          RoleConfiguredStatsReceiver(
             new RelativeNameMarkingStatsReceiver(stats.scope(serverLabel)),
-            Server)
+            Server,
+            Some(serverLabel))
 
       private[this] val serverParams = params +
         Label(serverLabel) +
@@ -133,6 +134,12 @@ trait ListeningStackServer[Req, Rep, This <: ListeningStackServer[Req, Rep, This
       }
 
       def boundAddress: SocketAddress = underlying.boundAddress
+
+      override def toString: String = {
+        val protocol = params[ProtocolLibrary].name
+        val label = if (serverLabel.isEmpty) "<unlabeled>" else serverLabel
+        s"ListeningServer($protocol, $label, $boundAddress)"
+      }
     }
 
   /**

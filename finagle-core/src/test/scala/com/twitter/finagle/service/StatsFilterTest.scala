@@ -7,18 +7,21 @@ import com.twitter.finagle.stats.{
   InMemoryStatsReceiver
 }
 import com.twitter.finagle._
+import com.twitter.finagle.stats.exp.{FunctionExpression, HistogramExpression, MetricExpression}
 import com.twitter.util._
 import java.util.concurrent.TimeUnit
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class StatsFilterTest extends FunSuite {
+class StatsFilterTest extends AnyFunSuite {
   val BasicExceptions = new CategorizingExceptionStatsHandler(_ => None, _ => None, rollup = false)
 
   def getService(
     exceptionStatsHandler: ExceptionStatsHandler = BasicExceptions
   ): (Promise[String], InMemoryStatsReceiver, Service[String, String]) = {
     val receiver = new InMemoryStatsReceiver()
-    val statsFilter = new StatsFilter[String, String](receiver, exceptionStatsHandler)
+    val metricBuilderRegistry = new MetricBuilderRegistry()
+    val statsFilter =
+      new StatsFilter[String, String](receiver, exceptionStatsHandler, metricBuilderRegistry)
     val promise = new Promise[String]
     val service = new Service[String, String] {
       def apply(request: String): Future[String] = promise
@@ -219,12 +222,12 @@ class StatsFilterTest extends FunSuite {
     val (promise, receiver, statsService) = getService()
 
     assert(receiver.counters(Seq("requests")) == 0)
-    assert(!receiver.counters.contains(Seq("failures")))
+    assert(receiver.counters(Seq("failures")) == 0)
 
     val f = statsService("foo")
 
     assert(receiver.counters(Seq("requests")) == 0)
-    assert(!receiver.counters.contains(Seq("failures")))
+    assert(receiver.counters(Seq("failures")) == 0)
 
     promise.setException(new Exception)
 
@@ -236,12 +239,12 @@ class StatsFilterTest extends FunSuite {
     val (promise, receiver, statsService) = getService()
 
     assert(receiver.counters(Seq("requests")) == 0)
-    assert(!receiver.counters.contains(Seq("failures")))
+    assert(receiver.counters(Seq("failures")) == 0)
 
     val f = statsService("foo")
 
     assert(receiver.counters(Seq("requests")) == 0)
-    assert(!receiver.counters.contains(Seq("failures")))
+    assert(receiver.counters(Seq("failures")) == 0)
 
     promise.setValue("whatever")
 
@@ -310,5 +313,13 @@ class StatsFilterTest extends FunSuite {
     assert(3 == sr.counter("requests")())
     assert(2 == sr.counter("success")())
     assert(1 == sr.counter("failures")())
+  }
+
+  test("expressions are instrumented") {
+    val (_, receiver, _) = getService()
+
+    assert(receiver.expressions("success_rate").expr.isInstanceOf[FunctionExpression])
+    assert(receiver.expressions("throughput").expr.isInstanceOf[MetricExpression])
+    assert(receiver.expressions("latency").expr.isInstanceOf[HistogramExpression])
   }
 }

@@ -2,7 +2,6 @@ package com.twitter.finagle.mysql
 
 import com.twitter.finagle.mysql.transport.{MysqlBuf, MysqlBufWriter, Packet}
 import com.twitter.io.Buf
-import java.security.MessageDigest
 import java.util.logging.Logger
 
 object Command {
@@ -164,6 +163,110 @@ private[mysql] case class SslConnectionRequest(
 }
 
 /**
+ * Sent to the server in response to the [[AuthSwitchRequest]] during the
+ * connection phase. The AuthSwitchResponse wraps the user's password hashed
+ * with either SHA-256 or SHA-1, depending on the authentication method.
+ *
+ * @param seqNum the sequence number of the packet to keep track of
+ *               the packets as we move through the authentication phases.
+ *
+ * @see [[https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::AuthSwitchResponse]]
+ */
+private[mysql] case class AuthSwitchResponse(
+  seqNum: Short,
+  password: Option[String],
+  salt: Array[Byte],
+  charset: Short,
+  withSha256: Boolean)
+    extends ProtocolMessage {
+
+  val hashPassword: Array[Byte] = password match {
+    case Some(p) =>
+      if (withSha256) PasswordUtils.encryptPasswordWithSha256(p, salt, charset)
+      else PasswordUtils.encryptPasswordWithSha1(p, salt, charset)
+    case None => Array.emptyByteArray
+  }
+
+  // If the password is a null password, then we only send a null
+  // byte as the password in the AuthSwitchResponse
+  private[this] val bodySize: Int = password match {
+    case Some(_) => 32
+    case None => 1
+  }
+
+  def seq: Short = seqNum
+
+  def toPacket: Packet = {
+    val bw = MysqlBuf.writer(new Array[Byte](bodySize))
+    bw.writeBytes(hashPassword)
+    bw.fill(bodySize - hashPassword.length, 0.toByte)
+
+    Packet(seq, bw.owned())
+  }
+}
+
+/**
+ * Used during `caching_sha2_password` authentication to send:
+ * 1. A request to the server for the RSA public key.
+ * 2. Password information back to server.
+ * Certain bytes are used to communicate what phase of authentication
+ * we are in, this is represented by [[AuthMoreDataType]].
+ *
+ * AuthMoreData packets sent from the client are not wrapped with a
+ * 0x01 status flag like the ones sent from the server.
+ *
+ * @param seqNum the sequence number of the packet to keep track of
+ *               the packets as we move through the authentication phases.
+ *
+ * @see [[https://dev.mysql.com/doc/dev/mysql-server/8.0.22/page_protocol_connection_phase_packets_protocol_auth_more_data.html]]
+ */
+private[mysql] sealed abstract class AuthMoreDataToServer(
+  seqNum: Short,
+  authMoreDataType: AuthMoreDataType)
+    extends ProtocolMessage {
+  def seq: Short = seqNum
+
+  def toPacket: Packet
+}
+
+/**
+ * Used to communicate successful fast authentication, or that full
+ * authentication must be performed.
+ */
+private[mysql] case class PlainAuthMoreDataToServer(
+  seqNum: Short,
+  authMoreDataType: AuthMoreDataType)
+    extends AuthMoreDataToServer(seqNum = seqNum, authMoreDataType = authMoreDataType) {
+
+  def toPacket: Packet = {
+    val bw = MysqlBuf.writer(new Array[Byte](2))
+    bw.writeByte(authMoreDataType.moreDataByte)
+
+    Packet(seq, bw.owned())
+  }
+}
+
+/**
+ * Used when the client sends password information to the server.
+ */
+private[mysql] case class PasswordAuthMoreDataToServer(
+  seqNum: Short,
+  authMoreDataType: AuthMoreDataType,
+  authData: Array[Byte])
+    extends AuthMoreDataToServer(seqNum = seqNum, authMoreDataType = authMoreDataType) {
+
+  def toPacket: Packet = {
+    // AuthMoreData packet sent from clients are unwrapped (do not have leading 0x01 status tag)
+    // See: https://dev.mysql.com/doc/dev/mysql-server/8.0.22/page_protocol_connection_phase_packets_protocol_auth_more_data.html
+    val packetBodySize = authData.length
+    val bw = MysqlBuf.writer(new Array[Byte](packetBodySize))
+    bw.writeBytes(authData)
+
+    Packet(seq, bw.owned())
+  }
+}
+
+/**
  * Abstract client response sent during connection phase.
  * Responsible for encoding credentials used to
  * authenticate a session.
@@ -176,11 +279,17 @@ private[mysql] sealed abstract class HandshakeResponse(
   salt: Array[Byte],
   serverCapabilities: Capability,
   charset: Short,
-  maxPacketSize: Int)
+  maxPacketSize: Int,
+  enableCachingSha2PasswordAuth: Boolean)
     extends ProtocolMessage {
 
   lazy val hashPassword: Array[Byte] = password match {
-    case Some(p) => encryptPassword(p, salt)
+    case Some(pword) =>
+      if (enableCachingSha2PasswordAuth) {
+        PasswordUtils.encryptPasswordWithSha256(pword, salt, charset)
+      } else {
+        PasswordUtils.encryptPasswordWithSha1(pword, salt, charset)
+      }
     case None => Array.emptyByteArray
   }
 
@@ -202,20 +311,6 @@ private[mysql] sealed abstract class HandshakeResponse(
 
     Packet(seq, bw.owned())
   }
-
-  private[this] def encryptPassword(password: String, salt: Array[Byte]) = {
-    val md = MessageDigest.getInstance("SHA-1")
-    val hash1 = md.digest(password.getBytes(MysqlCharset(charset).displayName))
-    md.reset()
-    val hash2 = md.digest(hash1)
-    md.reset()
-    md.update(salt)
-    md.update(hash2)
-
-    val digest = md.digest()
-    (0 until digest.length) foreach { i => digest(i) = (digest(i) ^ hash1(i)).toByte }
-    digest
-  }
 }
 
 /**
@@ -233,7 +328,8 @@ private[mysql] case class PlainHandshakeResponse(
   salt: Array[Byte],
   serverCap: Capability,
   charset: Short,
-  maxPacketSize: Int)
+  maxPacketSize: Int,
+  enableCachingSha2PasswordAuth: Boolean)
     extends HandshakeResponse(
       username,
       password,
@@ -242,7 +338,8 @@ private[mysql] case class PlainHandshakeResponse(
       salt,
       serverCap,
       charset,
-      maxPacketSize) {
+      maxPacketSize,
+      enableCachingSha2PasswordAuth) {
 
   def seq: Short = 1
 }
@@ -262,7 +359,8 @@ private[mysql] case class SecureHandshakeResponse(
   salt: Array[Byte],
   serverCap: Capability,
   charset: Short,
-  maxPacketSize: Int)
+  maxPacketSize: Int,
+  enableCachingSha2PasswordAuth: Boolean)
     extends HandshakeResponse(
       username,
       password,
@@ -271,7 +369,8 @@ private[mysql] case class SecureHandshakeResponse(
       salt,
       serverCap,
       charset,
-      maxPacketSize) {
+      maxPacketSize,
+      enableCachingSha2PasswordAuth) {
 
   require(
     serverCap.has(Capability.SSL),

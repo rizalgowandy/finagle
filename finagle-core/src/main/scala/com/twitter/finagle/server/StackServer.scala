@@ -1,14 +1,20 @@
 package com.twitter.finagle.server
 
 import com.twitter.finagle._
+import com.twitter.finagle.exp.ForkingSchedulerFilter
 import com.twitter.finagle.filter._
 import com.twitter.finagle.param._
-import com.twitter.finagle.service.{DeadlineFilter, ExpiringService, StatsFilter, TimeoutFilter}
-import com.twitter.finagle.{StackTransformer, Stack}
+import com.twitter.finagle.service.{
+  DeadlineFilter,
+  ExpiringService,
+  MetricBuilderRegistry,
+  StatsFilter,
+  TimeoutFilter
+}
 import com.twitter.finagle.stats.ServerStatsReceiver
 import com.twitter.finagle.tracing._
+import com.twitter.finagle.{Stack, _}
 import com.twitter.jvm.Jvm
-import scala.collection.immutable
 
 object StackServer {
   private[this] lazy val newJvmFilter = new MkJvmFilter(Jvm())
@@ -24,12 +30,44 @@ object StackServer {
     }
   }
 
+  object ProtoTracing {
+    def module[Req, Rep]: Stackable[ServiceFactory[Req, Rep]] =
+      new Stack.Module0[ServiceFactory[Req, Rep]] {
+        val role: Stack.Role = Role.protoTracing
+        val description: String =
+          "Pre-allocated stack module for protocols to inject tracing"
+        def make(next: ServiceFactory[Req, Rep]): ServiceFactory[Req, Rep] = next
+      }
+  }
+
+  object Preparer {
+    def module[Req, Rep]: Stackable[ServiceFactory[Req, Rep]] =
+      new Stack.Module0[ServiceFactory[Req, Rep]] {
+        val role: Stack.Role = Role.preparer
+        val description: String =
+          "Prepares the server"
+        def make(next: ServiceFactory[Req, Rep]): ServiceFactory[Req, Rep] = next
+      }
+  }
+
   /**
    * Canonical Roles for each Server-related Stack modules.
    */
   object Role extends Stack.Role("StackServer") {
+
+    /**
+     * Server-side JVM tracing
+     */
     val jvmTracing: Stack.Role = Stack.Role("JvmTracing")
+
+    /**
+     * Prepares the server for transport-level connection
+     */
     val preparer: Stack.Role = Stack.Role("preparer")
+
+    /**
+     * Defines a pre-allocated position in the stack for protocols to inject tracing.
+     */
     val protoTracing: Stack.Role = Stack.Role("protoTracing")
   }
 
@@ -114,7 +152,7 @@ object StackServer {
     stk.push(ExceptionSourceFilter.module)
     stk.push(new JvmTracing)
     stk.push(ServerStatsFilter.module)
-    stk.push(Role.protoTracing, identity[ServiceFactory[Req, Rep]](_))
+    stk.push(ProtoTracing.module)
     // `WriteTracingFilter` annotates traced requests. Annotations are timestamped
     // so this should be low in the stack to accurately delineate between wire time
     // and handling time. Ideally this would live closer to the "wire" in the netty
@@ -123,10 +161,10 @@ object StackServer {
     // allowing us to provide a complimentary annotation to the Client WR/WS as well
     // as measure queueing within the server via ConcurrentRequestFilter.
     stk.push(WireTracingFilter.serverModule)
-    stk.push(Role.preparer, identity[ServiceFactory[Req, Rep]](_))
-    // The TraceInitializerFilter must be pushed after most other modules so that
-    // any Tracing produced by those modules is enclosed in the appropriate
-    // span.
+    stk.push(Preparer.module)
+
+    // forks the execution if the current scheduler supports forking
+    stk.push(ForkingSchedulerFilter.server)
 
     if (shouldOffloadEarly) {
       // This module is placed at the top of the stack and shifts Future execution context
@@ -134,6 +172,9 @@ object StackServer {
       stk.push(OffloadFilter.server)
     }
 
+    // The TraceInitializerFilter must be pushed after most other modules so that
+    // any Tracing produced by those modules is enclosed in the appropriate
+    // span.
     stk.push(TraceInitializerFilter.serverModule)
     stk.push(MonitorFilter.serverModule)
 
@@ -142,22 +183,17 @@ object StackServer {
 
   /**
    * The default params used for StackServers.
+   * @note The MetricBuilderRegistry is stateful for each stack,
+   *       this should be evaluated every time calling,
    */
-  val defaultParams: Stack.Params =
-    Stack.Params.empty + Stats(ServerStatsReceiver)
+  def defaultParams: Stack.Params =
+    Stack.Params.empty + Stats(ServerStatsReceiver) +
+      MetricBuilders(Some(new MetricBuilderRegistry()))
 
   /**
    * A set of StackTransformers for transforming server stacks.
    */
-  private[finagle] object DefaultTransformer {
-    @volatile private var underlying = immutable.Queue.empty[StackTransformer]
-
-    def append(transformer: StackTransformer): Unit =
-      synchronized { underlying = underlying :+ transformer }
-
-    def transformers: Seq[StackTransformer] =
-      underlying
-  }
+  private[finagle] object DefaultTransformer extends StackTransformerCollection
 }
 
 /**
@@ -228,9 +264,9 @@ trait StackServer[Req, Rep]
 
   def withParams(ps: Stack.Params): StackServer[Req, Rep]
 
-  override def configured[P: Stack.Param](p: P): StackServer[Req, Rep]
+  def configured[P: Stack.Param](p: P): StackServer[Req, Rep]
 
-  override def configured[P](psp: (P, Stack.Param[P])): StackServer[Req, Rep]
+  def configured[P](psp: (P, Stack.Param[P])): StackServer[Req, Rep]
 
-  override def configuredParams(params: Stack.Params): StackServer[Req, Rep]
+  def configuredParams(params: Stack.Params): StackServer[Req, Rep]
 }

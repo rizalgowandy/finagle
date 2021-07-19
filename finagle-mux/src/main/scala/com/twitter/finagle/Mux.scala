@@ -1,14 +1,14 @@
 package com.twitter.finagle
 
 import com.twitter.conversions.StorageUnitOps._
-import com.twitter.finagle.Mux.param.{CompressionPreferences, MaxFrameSize, OppTls}
+import com.twitter.finagle.Mux.param.{CompressionPreferences, MaxFrameSize}
 import com.twitter.finagle.client._
 import com.twitter.finagle.factory.TimeoutFactory
 import com.twitter.finagle.naming.BindingFactory
 import com.twitter.finagle.filter.{NackAdmissionFilter, PayloadSizeFilter}
 import com.twitter.finagle.mux.Handshake.Headers
 import com.twitter.finagle.mux.pushsession._
-import com.twitter.finagle.mux.transport._
+import com.twitter.finagle.mux.transport.{OpportunisticTls => MuxOpportunisticTls, _}
 import com.twitter.finagle.mux.{
   ExportCompressionUsage,
   Handshake,
@@ -20,10 +20,18 @@ import com.twitter.finagle.mux.{
 import com.twitter.finagle.netty4.pushsession.{Netty4PushListener, Netty4PushTransporter}
 import com.twitter.finagle.netty4.ssl.server.Netty4ServerSslChannelInitializer
 import com.twitter.finagle.netty4.ssl.client.Netty4ClientSslChannelInitializer
-import com.twitter.finagle.param.{Label, ProtocolLibrary, Stats, Timer, WithDefaultLoadBalancer}
+import com.twitter.finagle.param.{
+  Label,
+  OppTls,
+  ProtocolLibrary,
+  Stats,
+  Timer,
+  WithDefaultLoadBalancer
+}
 import com.twitter.finagle.pool.BalancingPool
 import com.twitter.finagle.pushsession._
 import com.twitter.finagle.server._
+import com.twitter.finagle.ssl.{OpportunisticTls, SnoopingLevelInterpreter}
 import com.twitter.finagle.tracing._
 import com.twitter.finagle.transport.Transport.{ClientSsl, ServerSsl}
 import com.twitter.finagle.transport.Transport
@@ -78,29 +86,16 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
      * @note opportunistic TLS is not mutually intelligible with simple mux
      *       over TLS
      */
-    case class OppTls(level: Option[OpportunisticTls.Level]) {
-      def mk(): (OppTls, Stack.Param[OppTls]) =
-        (this, OppTls.param)
-    }
-    object OppTls {
-      implicit val param = new Stack.Param[OppTls] {
-        val default: OppTls = OppTls(None)
+    @deprecated("Please use com.twitter.finagle.param.OppTls directly", "2021-03-11")
+    type OppTls = com.twitter.finagle.param.OppTls
 
-        // override this to have a "cleaner" output in the registry
-        override def show(value: OppTls): Seq[(String, () => String)] = {
-          val levelStr = value match {
-            case OppTls(Some(oppTls)) => oppTls.value.toString
-            case OppTls(None) => "none"
-          }
-          Seq(("opportunisticTlsLevel", () => levelStr))
-        }
-      }
+    @deprecated("Please use com.twitter.finagle.param.OppTls directly", "2021-03-11")
+    object OppTls {
+      def apply(level: Option[OpportunisticTls.Level]): OppTls =
+        com.twitter.finagle.param.OppTls(level)
 
       /** Determine whether opportunistic TLS is configured to `Desired` or `Required`. */
-      def enabled(params: Stack.Params): Boolean = params[OppTls].level match {
-        case Some(OpportunisticTls.Desired | OpportunisticTls.Required) => true
-        case _ => false
-      }
+      def enabled(params: Stack.Params): Boolean = com.twitter.finagle.param.OppTls.enabled(params)
     }
 
     /**
@@ -116,7 +111,7 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
 
     // tells the Netty4Transporter not to turn on TLS so we can turn it on later
     private[finagle] def removeTlsIfOpportunisticClient(params: Stack.Params): Stack.Params = {
-      params[param.OppTls].level match {
+      params[OppTls].level match {
         case None => params
         case _ => params + Transport.ClientSsl(None)
       }
@@ -124,9 +119,14 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
 
     // tells the Netty4Listener not to turn on TLS so we can turn it on later
     private[finagle] def removeTlsIfOpportunisticServer(params: Stack.Params): Stack.Params = {
-      params[param.OppTls].level match {
-        case None => params
-        case _ => params + Transport.ServerSsl(None)
+      // If we have snooping enabled we're going to leave the params as is.
+      // The snooper will decided whether to add the TLS handler.
+      if (SnoopingLevelInterpreter.shouldEnableSnooping(params)) params
+      else {
+        params[OppTls].level match {
+          case None => params
+          case _ => params + Transport.ServerSsl(None)
+        }
       }
     }
 
@@ -214,7 +214,7 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
     ): Handshake.Headers = {
       val buffer = ArrayBuffer(
         MuxFramer.Header.KeyBuf -> MuxFramer.Header.encodeFrameSize(maxFrameSize.inBytes.toInt),
-        OpportunisticTls.Header.KeyBuf -> tlsLevel.buf
+        MuxOpportunisticTls.Header.KeyBuf -> tlsLevel.buf
       )
 
       if (!compressionPreferences.isDisabled) {
@@ -228,8 +228,8 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
      * Check the opportunistic TLS configuration to ensure it's in a consistent state
      */
     private[finagle] def validateTlsParamConsistency(params: Stack.Params): Unit = {
-      if (param.OppTls.enabled(params) && params[ClientSsl].sslClientConfiguration.isEmpty) {
-        val level = params[param.OppTls].level
+      if (OppTls.enabled(params) && params[ClientSsl].sslClientConfiguration.isEmpty) {
+        val level = params[OppTls].level
         throw new IllegalStateException(
           s"Client desired opportunistic TLS ($level) but ClientSsl param is empty."
         )
@@ -343,7 +343,7 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
     private[finagle] val tlsEnable: (Stack.Params, ChannelPipeline) => Unit = (params, pipeline) =>
       pipeline.addFirst("opportunisticSslInit", new Netty4ServerSslChannelInitializer(params))
 
-    private[finagle] val params: Stack.Params = StackServer.defaultParams +
+    private[finagle] def params: Stack.Params = StackServer.defaultParams +
       ProtocolLibrary("mux") +
       param.TurnOnTlsFn(tlsEnable)
 
@@ -408,7 +408,7 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
 
       val withoutCompression = Seq(
         MuxFramer.Header.KeyBuf -> MuxFramer.Header.encodeFrameSize(maxFrameSize.inBytes.toInt),
-        OpportunisticTls.Header.KeyBuf -> tlsLevel.buf
+        MuxOpportunisticTls.Header.KeyBuf -> tlsLevel.buf
       )
 
       if (compressionFormats.isDisabled) {
@@ -424,8 +424,8 @@ object Mux extends Client[mux.Request, mux.Response] with Server[mux.Request, mu
      */
     private[finagle] def validateTlsParamConsistency(params: Stack.Params): Unit = {
       // We need to make sure
-      if (param.OppTls.enabled(params) && params[ServerSsl].sslServerConfiguration.isEmpty) {
-        val level = params[param.OppTls].level
+      if (OppTls.enabled(params) && params[ServerSsl].sslServerConfiguration.isEmpty) {
+        val level = params[OppTls].level
         throw new IllegalStateException(
           s"Server desired opportunistic TLS ($level) but ServerSsl param is empty."
         )

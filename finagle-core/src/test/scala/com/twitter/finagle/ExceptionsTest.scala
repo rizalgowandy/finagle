@@ -5,9 +5,9 @@ import com.twitter.finagle.tracing.{SpanId, TraceId}
 import com.twitter.util.Duration
 import java.net.{InetSocketAddress, SocketAddress}
 import javax.net.ssl.SSLException
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class ExceptionsTest extends FunSuite {
+class ExceptionsTest extends AnyFunSuite {
 
   private val address = new SocketAddress {
     override def toString: String = "foo"
@@ -140,14 +140,32 @@ class ExceptionsTest extends FunSuite {
     val ex = new NoBrokersAvailableException(
       "/s/cool/story",
       Dtab.base,
-      Dtab.read("/foo=>/$/com.twitter.butt")
+      Dtab.read("/foo=>/$/com.twitter.butt"),
+      Dtab.empty
     )
 
     assert(
       ex.getMessage ==
         "No hosts are available for /s/cool/story, " +
           s"Dtab.base=[${Dtab.base.show}], " +
+          "Dtab.limited=[], " +
           "Dtab.local=[/foo=>/$/com.twitter.butt]. " +
+          "Remote Info: Not Available"
+    )
+
+    val ex2 = new NoBrokersAvailableException(
+      "/s/cool/story",
+      Dtab.base,
+      Dtab.empty,
+      Dtab.read("/foo=>/$/com.twitter.butt")
+    )
+
+    assert(
+      ex2.getMessage ==
+        "No hosts are available for /s/cool/story, " +
+          s"Dtab.base=[${Dtab.base.show}], " +
+          "Dtab.limited=[/foo=>/$/com.twitter.butt], " +
+          "Dtab.local=[]. " +
           "Remote Info: Not Available"
     )
   }

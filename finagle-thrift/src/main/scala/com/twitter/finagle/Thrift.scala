@@ -58,7 +58,7 @@ import org.apache.thrift.protocol.TProtocolFactory
  * to the request, and every subsequent request is dispatched with an
  * envelope carrying trace metadata. The envelope itself is also a
  * Thrift struct described
- * [[https://github.com/twitter/finagle/blob/master/finagle-thrift/src/main/thrift/tracing.thrift
+ * [[https://github.com/twitter/finagle/blob/release/finagle-thrift/src/main/thrift/tracing.thrift
  * here]].
  *
  * == Clients ==
@@ -112,7 +112,7 @@ import org.apache.thrift.protocol.TProtocolFactory
  * finagle server (or any other supporting this extension), we reply
  * to the request, and every subsequent request is dispatched with an
  * envelope carrying trace metadata. The envelope itself is also a
- * Thrift struct described [[https://github.com/twitter/finagle/blob/master/finagle-thrift/src/main/thrift/tracing.thrift here]].
+ * Thrift struct described [[https://github.com/twitter/finagle/blob/release/finagle-thrift/src/main/thrift/tracing.thrift here]].
  *
  * == Servers ==
  *
@@ -210,6 +210,67 @@ object Thrift
     case class PerEndpointStats(enabled: Boolean)
     implicit object PerEndpointStats extends Stack.Param[PerEndpointStats] {
       val default = PerEndpointStats(false)
+    }
+
+    // This is based on the generated stubs from Scrooge.
+    private val ScroogeGeneratedSuffixes = Seq(
+      "$ServiceIface",
+      "$FutureIface",
+      "$MethodPerEndpoint",
+      "$ServicePerEndpoint",
+      "$MethodIface",
+      "$MethodPerEndpoint$MethodPerEndpointImpl",
+      "$ReqRepServicePerEndpoint",
+      "$ReqRepMethodPerEndpoint$ReqRepMethodPerEndpointImpl"
+    )
+
+    private def stripSuffix(iface: Class[_]): Option[String] = {
+      val ifaceName = iface.getName
+      ScroogeGeneratedSuffixes.find(s => ifaceName.endsWith(s)).map(s => ifaceName.stripSuffix(s))
+    }
+
+    /**
+     * A `Param` that captures a class of a Scrooge-generated service stub that's associated
+     * with a given client or server.
+     */
+    final case class ServiceClass(clazz: Option[Class[_]]) {
+
+      /**
+       * Runs a recursive search for a Scrooge-generated service stub class, starting with the class
+       * passed to a Finagle client or a server. This function isn't tail-recursive so there is a
+       * risk it can run out of stack space. We, however, don't anticipate this to happen since
+       * service stubs hierarchies are finite and frankly very short (0 to 2 hops at most).
+       */
+      private[this] def search(root: Class[_]): Option[String] = {
+        // Maybe it's already Scrooge-generated type?
+        stripSuffix(root).orElse {
+          val interfaces = root.getInterfaces.toSeq
+          // Maybe it's a HKT Foo[Future]?
+          if (interfaces.contains(classOf[com.twitter.finagle.thrift.ThriftService]))
+            Some(root.getName)
+          else {
+            // Repeat for its supper class.
+            Option(root.getSuperclass)
+              .filter(_ != classOf[java.lang.Object])
+              .flatMap(search)
+              .orElse {
+                // Repeat for all of its interfaces.
+                interfaces.flatMap(search).headOption
+              }
+          }
+        }
+      }
+
+      /**
+       * Extracts the Thrift IDL FQN from the Scrooge-generated service class in `clazz`. The main
+       * purpose of this method is to drop the Scrooge-specific suffix from the class name, leaving
+       * only domain-relevant name behind.
+       */
+      val fullyQualifiedName: Option[String] = clazz.flatMap(search)
+    }
+
+    implicit object ServiceClass extends Stack.Param[ServiceClass] {
+      val default = ServiceClass(None)
     }
   }
 
@@ -484,7 +545,7 @@ object Thrift
       .insertBefore(StackServer.Role.preparer, ServerToReqRepPreparer)
       .replace(StackServer.Role.preparer, preparer)
 
-    private val params: Stack.Params = StackServer.defaultParams +
+    private def params: Stack.Params = StackServer.defaultParams +
       ProtocolLibrary("thrift")
   }
 
@@ -552,6 +613,16 @@ object Thrift
       transport: Transport[In, Out] { type Context <: Server.this.Context },
       service: Service[Array[Byte], Array[Byte]]
     ): Closable = new ThriftSerialServerDispatcher(transport, service)
+
+    /**
+     * Configure the service class that may be used with this server to
+     * collect instrumentation metadata. This is not necessary to run a
+     * service.
+     *
+     * @note that when using the `.serveIface` methods this is unnecessary.
+     */
+    def withServiceClass(clazz: Class[_]): Server =
+      configured(param.ServiceClass(Some(clazz)))
 
     def withProtocolFactory(protocolFactory: TProtocolFactory): Server =
       configured(param.ProtocolFactory(protocolFactory))

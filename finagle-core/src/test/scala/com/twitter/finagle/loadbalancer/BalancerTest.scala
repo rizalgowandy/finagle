@@ -5,12 +5,12 @@ import com.twitter.finagle._
 import com.twitter.finagle.stats.{Counter, InMemoryStatsReceiver}
 import com.twitter.util.{Await, Future, Time}
 import org.scalacheck.Gen
-import org.scalatest.FunSuite
 import org.scalatest.concurrent.Conductors
 import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
 import scala.language.reflectiveCalls
+import org.scalatest.funsuite.AnyFunSuite
 
-class BalancerTest extends FunSuite with Conductors with ScalaCheckDrivenPropertyChecks {
+class BalancerTest extends AnyFunSuite with Conductors with ScalaCheckDrivenPropertyChecks {
 
   private class TestBalancer(
     protected val statsReceiver: InMemoryStatsReceiver = new InMemoryStatsReceiver,
@@ -50,18 +50,19 @@ class BalancerTest extends FunSuite with Conductors with ScalaCheckDrivenPropert
       def needsRebuild: Boolean = false
     }
 
-    class Node(val factory: EndpointFactory[Unit, Unit]) extends NodeT[Unit, Unit] {
+    class Node(val factory: EndpointFactory[Unit, Unit])
+        extends ServiceFactoryProxy(factory)
+        with NodeT[Unit, Unit] {
       def load: Double = ???
       def pending: Int = ???
-      def close(deadline: Time): Future[Unit] = TestBalancer.this.synchronized {
+      override def close(deadline: Time): Future[Unit] = TestBalancer.this.synchronized {
         factory.close()
         Future.Done
       }
-      def apply(conn: ClientConnection): Future[Service[Unit, Unit]] = Future.never
+      override def apply(conn: ClientConnection): Future[Service[Unit, Unit]] = Future.never
     }
 
     protected def newNode(factory: EndpointFactory[Unit, Unit]): Node = new Node(factory)
-    protected def failingNode(cause: Throwable): Node = ???
 
     protected def initDistributor(): Distributor = Distributor(Vector.empty, singletonDistributor)
   }

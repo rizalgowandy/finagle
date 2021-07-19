@@ -10,7 +10,7 @@ import com.twitter.finagle.netty4.http.handler.{
   UnpoolHttpHandler,
   UriValidatorHandler
 }
-import com.twitter.finagle.param.{Logger, Stats}
+import com.twitter.finagle.param.Stats
 import com.twitter.finagle.http.param._
 import com.twitter.finagle.server.Listener
 import com.twitter.finagle.transport.TransportContext
@@ -111,6 +111,9 @@ package object http {
     // We're going to validate our headers right before the client exception mapper.
     fn(HeaderValidatorHandler.HandlerName, HeaderValidatorHandler)
 
+    // Let's see if we can filter out bad URI's before Netty starts handling them...
+    fn(UriValidatorHandler.HandlerName, UriValidatorHandler)
+
     // Map some client related channel exceptions to something meaningful to finagle
     fn("clientExceptionMapper", ClientExceptionMapper)
 
@@ -146,7 +149,6 @@ package object http {
     val maxRequestSize = params[MaxRequestSize].size
     val decompressionEnabled = params[Decompression].enabled
     val compressionLevel = params[CompressionLevel].level
-    val log = params[Logger].log
     val stats = params[Stats].statsReceiver
 
     { pipeline: ChannelPipeline =>

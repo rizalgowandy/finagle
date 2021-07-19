@@ -5,8 +5,9 @@ import com.twitter.finagle._
 import com.twitter.finagle.service.ConstantService
 import com.twitter.finagle.util.Rng
 import com.twitter.util.{Activity, Await, Future, Time, Var}
-import org.scalatest.{FunSuite, OneInstancePerTest}
+import org.scalatest.OneInstancePerTest
 import scala.util.Random
+import org.scalatest.funsuite.AnyFunSuite
 
 object LoadDistributionTest {
 
@@ -55,7 +56,7 @@ object LoadDistributionTest {
  * for x, we can get the maximum size of the cluster (~1600) for which these tests are correct.
  */
 abstract class LoadDistributionTest(newBalancerFactory: Rng => LoadBalancerFactory)
-    extends FunSuite
+    extends AnyFunSuite
     with OneInstancePerTest {
 
   import LoadDistributionTest._
@@ -86,7 +87,10 @@ abstract class LoadDistributionTest(newBalancerFactory: Rng => LoadBalancerFacto
     clients.foreach(sendAndWait(150))
 
     // Optimal load is 750 / 10 = 75.
-    assert(servers.forall(s => s.load <= 150))
+    // With eager connections enabled, we expect 1 more request per client.
+    // With eager connections disabled, we expect <= 150, with it enabled we expect <= 155
+    // (as we have 5 clients)
+    assert(servers.forall(s => s.load <= 155))
   }
 
   test("servers deploy") {

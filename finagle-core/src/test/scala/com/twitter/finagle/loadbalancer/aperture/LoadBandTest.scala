@@ -5,9 +5,9 @@ import com.twitter.finagle.ServiceFactoryProxy
 import com.twitter.finagle.stats.NullStatsReceiver
 import com.twitter.finagle.util.Rng
 import com.twitter.util.{Await, Closable, Duration}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class LoadBandTest extends FunSuite with ApertureSuite {
+class LoadBandTest extends AnyFunSuite with ApertureSuite {
   private val rng = Rng()
 
   private class Bal(
@@ -18,6 +18,7 @@ class LoadBandTest extends FunSuite with ApertureSuite {
       with LeastLoaded[Unit, Unit]
       with LoadBand[Unit, Unit] {
 
+    val manageWeights: Boolean = false
     protected def statsReceiver = NullStatsReceiver
     protected def smoothWin: Duration = Duration.Zero
 
@@ -25,10 +26,11 @@ class LoadBandTest extends FunSuite with ApertureSuite {
         extends ServiceFactoryProxy[Unit, Unit](factory)
         with LeastLoadedNode
         with LoadBandNode
-        with ApertureNode
+        with ApertureNode[Unit, Unit] {
+      override def tokenRng: Rng = rng
+    }
 
     protected def newNode(factory: EndpointFactory[Unit, Unit]) = Node(factory)
-    protected def failingNode(cause: Throwable) = ???
   }
 
   private class Avg {

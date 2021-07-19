@@ -10,13 +10,222 @@ Unreleased
 New Features
 ~~~~~~~~~~~~
 
+* finagle-mysql: introduce `newRichClient(dest: String, label: String)` method, which removes the
+  need for extra boilerplate to convert the destination String to a `c.t.finagle.Name` when
+  specifying both `dest` and `label` in String form. ``PHAB_ID=D706140``
+
+Runtime Behavior Changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+* finagle: Update Caffeine cache library to version 2.9.1 ``PHAB_ID=D660908``
+
+* finagle: Update ScalaCheck to version 1.15.4 ``PHAB_ID=D691691``
+
+* finagle-http: remove the `com.twitter.finagle.http.UseH2`,
+  `com.twitter.finagle.http.UseH2CClients2`, `com.twitter.finagle.http.UseH2CServers` and
+  `com.twitter.finagle.http.UseHttp2MultiplexCodecClient` toggles. The configuration for
+  `c.t.finagle.Http.client` and `c.t.finagle.Http.server` now default to using the HTTP/2 based
+  implementation. To disable this behavior, use `c.t.finagle.Http.client.withNoHttp2` and
+  `c.t.finagle.Http.server.withNoHttp2` respectively.
+
+  Alternatively, new GlobalFlag's have been introduced to modify the default behavior of clients
+  and servers that have not been explicitly configured, where
+  the `com.twitter.finagle.http.defaultClientProtocol`
+  and `com.twitter.finagle.http.defaultServerProtocol` flags can be set to `HTTP/1.1` to modify
+  the default client or server configuration, respectively. `PHAB_ID=D625880``
+
+* finagle-netty4: Finagle now reuses Netty "boss" (or parent) threads instead of creating a new
+  thread per server. Netty parent threads are servicing the server acceptor, a relatively
+  lightweight component that listens for new incoming connections before handing them out to the
+  global worker pool.  ``PHAB_ID=D662116``
+
+* finagle-http2: introduce optional parameter `NackRstFrameHandling` to enable or disable NACK
+  conversion to RST_STREAM frames. ``PHAB_ID=D702696``
+
+* finagle-thrift, finagle-thriftmux: clients may start reporting (correctly) lower success rate.
+  Previously server exceptions not declared in IDL were erroneously considered as successes.
+  The fgix also improves failure detection and thus nodes previously considered as healthy
+  by failure accrual policy may be considered as unhealthy. ``PHAB_ID=D698272``
+
+Bug Fixes
+~~~~~~~~~~
+
+* finagle-core: Add `BackupRequestFilter` to client registry when configured. ``PHAB_ID=D686981``
+
+* finagle-thrift, finagle-thriftmux: clients now treat server exceptions
+  not declared in IDL as failures, rather than successes,
+  and do not skip the configured response classifier for failure accrual.
+  ``PHAB_ID=D698272``
+
+21.6.0
+------
+
+New Features
+~~~~~~~~~~~~
+
+* finagle-core: Introduce `Dtab.limited`, which is a process-local `Dtab` that will
+  NOT be remotely broadcast for any protocol, where `Dtab.local` will be
+  broadcast for propagation on supported protocols. For path name resolution, the
+  `Dtab.local` will take precedence over the `Dtab.limited`, if the same path is
+  defined in both, and both take precedence over the `Dtab.base`. The existing
+  `Dtab.local` request propagation behavior remains unchanged. ``PHAB_ID=D677860``
+
+* finagle-core: Add descriptions to RequestDraining, PrepFactory, PrepConn, and
+  protoTracing modules in StackClient. Add descriptions to preparer and
+  protoTracing modules in StackServer. ``PHAB_ID=D685887``
+
+* finagle-mysql: Add support for MySQL 8.0's default `caching_sha2_password` pluggable
+  authentication. ``PHAB_ID=D676015``
+
+Breaking API Changes
+~~~~~~~~~~~~~~~~~~~~
+
+* finagle-memcached: Ketama Partitioned Client has been removed and the Partition Aware
+  Memcached Client has been made the default. As part of this change,
+  `com.twitter.finagle.memcached.UsePartitioningMemcachedClient` toggle has been removed,
+  and it no longer applies. ``PHAB_ID=D661460``
+
+* finagle-core: c.t.f.builder.ServerBuilder has been removed. Use the StackServer interfaces
+  instead. ``PHAB_ID=D689067``
+
+Runtime Behavior Changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+* finagle-core: Broadcast context keys lookups are now case insensitive. This change is backwards
+  compatible as the marshalled key id is unchanged. Although enabled by default, this change will
+  be temporarily sitting behind a toggle, `com.twitter.finagle.context.MarshalledContextLookupId`
+  that can be used to turn off this change. ``PHAB_ID=D665209``
+
+Deprecations
+~~~~~~~~~~~~
+
+* finagle-core: The `ServerBuilder` pattern has been deprecated. Use the stack server pattern
+  instead. ``PHAB_ID=D691414``
+
+21.5.0
+------
+
+New Features
+~~~~~~~~~~~~
+
+* finagle-http2: Added `c.t.f.http2.param.EnforceMaxConcurrentStreams` which allows users to
+  configure http2 clients to buffer streams once a connection has hit the max concurrent stream
+  limit rather than rejecting them.  A `buffered_streams` gauge has been added to track the
+  current number of buffered streams.  ``PHAB_ID=D643138``
+
+* finagle-mux: Added support for TLS snooping to the mux protocol. This allows a thriftmux
+  server to start a connection as TLS or follow the existing upgrade pathway at the leisure of
+  the client. This also allows the server to support opportunistic TLS and still downgrade to
+  vanilla thrift. ``PHAB_ID=D584638``
+
+* finagle-netty4: Added a new counter to keep track of the number of TLS connections that were
+  started via snooping. ``PHAB_ID=D667652``
+
+* finagle-thrift: Thrift(Mux) clients and servers now fill in a `c.t.f.Thrift.param.ServiceClass`
+  stack param with the runtime class corresponding to a IDL-generated service stub.
+  ``PHAB_ID=D676781``
+
+Breaking API Changes
+~~~~~~~~~~~~~~~~~~~~
+
+* finagle-core: `c.t.f.param.Logger` has been removed. Use external configuration supported by
+  your logging backend to alter settings of `com.twitter.finagle` logger.  ``PHAB_ID=D618667``
+
+Runtime Behavior Changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+* finagle-http: Make handling of invalid URI consistent across client implementations. There are
+  behavioral inconsistencies amongst the current HTTP client implementations:
+
+  Our HTTP/1.x clients allow for submitting requests that contain non-ASCII characters and
+  invalid character encoded sequences, while our HTTP/2 clients will either mangle
+  the URI and strip out non-ASCII characters within the Netty pipeline or result in an
+  `UnknownChannelException` when attempting to parse invalid character encoded sequences.
+  With this change, we now consistently propagate an `InvalidUriException` result, which
+  is marked as NonRetryable for all HTTP client implementations. All HTTP server implementations
+  maintain behavior of returning a `400 Bad Request` response status, but now also correctly
+  handle invalid character encoded sequences. ``PHAB_ID=D660069``
+
+Bug Fixes
+~~~~~~~~~~
+
+* finagle-core: Failed writes on Linux due to a remote peer disconnecting should now
+  be properly seen as a `c.t.f.ChannelClosedException` instead of a
+  `c.t.f.UnknownChannelException`. ``PHAB_ID=D661550``
+
+* finagle-http2: The `streams` gauge is now correctly added for http2 connections over TLS.
+  ``PHAB_ID=D643138``
+
+* finagle-core: `c.t.f.n.NameTreeFactory` will now discard empty elements in
+  `c.t.f.NameTree.Union's` with zero weight. ``PHAB_ID=D666635``
+
+* finagle-http: All HTTP server implementations consistently return a `400 Bad Request`
+  response status when encountering a URI with invalid character encoded sequences.
+  ``PHAB_ID=D660069``
+
+21.4.0
+------
+
+New Features
+~~~~~~~~~~~~
+
+* finagle-core: Introduce a new `ResponseClassifier` ('IgnoreIRTEs') that treats
+  `com.twitter.finagle.IndividualRequestTimeoutException`s as `ResponseClass.Ignored`.
+  This response classifier is useful when a client has set a super low `RequestTimeout` and
+  receiving a response is seen as 'best-effort'. ``PHAB_ID=D645818``
+
+* finagle-mysql: Introduce support of opportunistic TLS to allow mysql clients
+  with enabled TLS to speak over encrypted connections with MySQL servers where
+  TLS is on, and fallback to plaintext connections if TLS is switched off on
+  the server side. ``PHAB_ID=D644982``
+
+Runtime Behavior Changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+* finagle-core: The "failures" counter is changed to be created eagerly, when no failure
+  happens, the counter value is 0. ``PHAB_ID=D645590``
+
+Breaking API Changes
+~~~~~~~~~~~~~~~~~~~~
+
+* finagle-exception: This package was no longer used and therefore has been removed. No
+  replacement is planned. ``PHAB_ID=D656591``
+
+21.3.0
+------
+
+New Features
+~~~~~~~~~~~~
+
+* finagle-core: Added value `ForceWithDtab` to flag
+  `-com.twitter.finagle.loadbalancer.exp.apertureEagerConnections` that forces the
+  aperture load balancer to eagerly connect, even in staging environments where
+  Dtab locals are set. ``PHAB_ID=D613989``
+
 * finagle-core: Introduce a new `Backoff` to create backoffs based on varies strategies, where
   backoffs are calculated on the fly, instead of being created once and memoized in a `Stream`.
   Also introduced `Backoff.fromStream(Stream)` and `Backoff.toStream` to help with migration to
   the new API. ``PHAB_ID=D592562``
 
+* finagle-netty4: Upgrade to Netty 4.1.59.Final and TcNative 2.0.35.Final. ``PHAB_ID=D629268``
+
+* finagle-http: Integrate Kerberos authentication filter to finagle http client and server.
+  ``PHAB_ID=D634270`` ``PHAB_ID=D621714``
+
+* finagle-core: Provided `c.t.f.ssl.TrustCredentials.X509Certificates` to enable directly
+  passing `X509Certificate` instead of passing a `File`. ``PHAB_ID=D641088``
+
 Breaking API Changes
 ~~~~~~~~~~~~~~~~~~~~
+
+* finagle: Builds are now only supported for Scala 2.12+ ``PHAB_ID=D631091``
+
+* finagle-base-http: Kerberos jaas config `KerberosConfiguration` is replaced with ServerKerberosConfiguration
+  and ClientKerberosConfiguration concrete classes. ``PHAB_ID=D634270``
+
+* finagle-core: Changed flag `-com.twitter.finagle.loadbalancer.exp.apertureEagerConnections"
+  from having Boolean values true or false to `EagerConnectionsType` values `Enable`,
+  `Disable`, and `ForceWithDtab`. ``PHAB_ID=D613989``
 
 * finagle-mysql: The constructor of `c.t.f.mysql.transport.MysqlBufReader` now takes an underlying
   `c.t.io.ByteReader`. Prior uses of the constructor, which took a `c.t.io.Buf`, should migrate to
@@ -24,6 +233,15 @@ Breaking API Changes
 
 Runtime Behavior Changes
 ~~~~~~~~~~~~~~~~~~~~~~~~
+
+* finagle: Revert to scala version 2.12.12 due to https://github.com/scoverage/sbt-scoverage/issues/319
+  ``PHAB_ID=D635917``
+
+* finagle: Bump scala version to 2.12.13 ``PHAB_ID=D632567``
+
+* finagle-core: Move helper tracing methods like `traceLocal` in `Trace` into the `Tracing` class. This
+  allows cheaper use of these APIs by first capturing a Trace via `Trace#apply`, avoiding the extra lookups
+  that will add overhead on the request path. ``PHAB_ID=D633318``.
 
 * finagle-core: `c.t.finagle.InetResolver`, `c.t.finagle.builder.ClientBuilder`,
   `c.t.finagle.liveness.FailureAccrualFactory`, `c.t.finagle.liveness.FailureAccrualPolicy`,
@@ -34,11 +252,25 @@ Runtime Behavior Changes
   backoffs. Services can convert a `Stream` to/from a `Backoff` with `Backoff.fromStream(Stream)`
   and `Backoff.toStream`. ``PHAB_ID=D592562``
 
+* finagle-core: remove the `com.twitter.finagle.loadbalancer.apertureEagerConnections` Toggle and
+  change the default behavior to enable eager connections for `c.t.f.loadbalancer.ApertureLeastLoaded`
+  and `c.t.f.loadbalancer.AperturePeakEwma` load balancers. The state of the
+  `com.twitter.finagle.loadbalancer.apertureEagerConnections` GlobalFlag now also defaults to enable
+  this feature (`Enable`. You can disable this feature for all clients via setting the
+  `com.twitter.finagle.loadbalancer.apertureEagerConnections` GlobalFlag to `Disable` for your process.
+  (i.e. `-com.twitter.finagle.loadbalancer.apertureEagerConnections=Disable`).
+  ``PHAB_ID=D625618``
+
+* finagle-partitioning: Add EndpointMarkedDeadException. Before this change, the exception being
+  thrown appeared as an anonymous class and it made deciphering it difficult when it came up in
+  stats. Create a concrete class and throw that. ``PHAB_ID=D640835``
+
 Deprecations
 ~~~~~~~~~~~~
 * finagle-core: `Backoff.fromJava` is marked as deprecated, since the new `Backoff` is java-friendly.
   For services using `Stream.iterator` on the old `Backoff`, please use the new API
   `Backoff.toJavaIterator` to acquire a java-friendly iterator. ``PHAB_ID=D592562``
+
 
 21.2.0
 ------
@@ -73,7 +305,7 @@ Runtime Behavior Changes
 New Features
 ~~~~~~~~~~~~
 
-* finagle-core: Add `clnt/<FilterName>_rejected` annotation to filters that may throttle requests, 
+* finagle-core: Add `clnt/<FilterName>_rejected` annotation to filters that may throttle requests,
   including `c.t.finagle.filter.NackAdmissionFilter` and `c.t.finagle.filter.RequestSemaphoreFilter`.
   ``PHAB_ID=D597875``
 
@@ -108,7 +340,7 @@ New Features
 * finagle-benchmark: Add a benchmark for LocalContext. ``PHAB_ID=D588632``
 
 * finagle-core: Add a new filter, `ClientExceptionTracingFilter`, that records error annotations for
-  completed spans. Annotations include `error`, `exception.type`, and `exception.message`. 
+  completed spans. Annotations include `error`, `exception.type`, and `exception.message`.
   See https://github.com/open-telemetry/opentelemetry-specification for naming details.
   ``PHAB_ID=D583001``
 

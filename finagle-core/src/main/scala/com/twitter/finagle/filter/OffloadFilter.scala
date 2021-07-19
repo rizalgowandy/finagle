@@ -1,29 +1,10 @@
 package com.twitter.finagle.filter
 
-import com.twitter.concurrent.NamedPoolThreadFactory
-import com.twitter.finagle.offload.{auto, numWorkers, queueSize, statsSampleInterval}
-import com.twitter.finagle.stats.{Counter, FinagleStatsReceiver, StatsReceiver}
+import com.twitter.finagle.offload.{OffloadFilterAdmissionControl, OffloadFuturePool}
 import com.twitter.finagle.tracing.Trace
-import com.twitter.finagle.util.DefaultTimer
-import com.twitter.finagle.{Service, ServiceFactory, SimpleFilter, Stack, Stackable}
-import com.twitter.util.{
-  Duration,
-  ExecutorServiceFuturePool,
-  Future,
-  FutureNonLocalReturnControl,
-  FuturePool,
-  Promise,
-  Stopwatch,
-  Time,
-  Timer
-}
-import java.util.concurrent.{
-  ExecutorService,
-  LinkedBlockingQueue,
-  RejectedExecutionHandler,
-  ThreadPoolExecutor,
-  TimeUnit
-}
+import com.twitter.finagle._
+import com.twitter.util._
+import java.util.concurrent.ExecutorService
 import scala.runtime.NonLocalReturnControl
 
 /**
@@ -43,107 +24,12 @@ object OffloadFilter {
    * @tparam T the return type of the by-name parameter
    * @return a future to be satisfied with the result once the evaluation is complete
    */
-  private[twitter] def offload[T](f: => T): Future[T] =
-    global match {
-      case None => FuturePool.unboundedPool(f)
-      case Some(pool) => pool(f)
-    }
-
-  private[finagle] final class SampleQueueStats(
-    pool: FuturePool,
-    stats: StatsReceiver,
-    timer: Timer)
-      extends (() => Unit) {
-
-    private val delayMs = stats.stat("delay_ms")
-    private val pendingTasks = stats.stat("pending_tasks")
-
-    // No need to volatile or synchronize this to ensure safe publishing as there is a
-    // happens-before relationship between the thread submitting a task into the ExecutorService
-    // (or FuturePool) and the task itself.
-    private var submitted: Stopwatch.Elapsed = null
-
-    private object task extends (() => Unit) {
-      def apply(): Unit = {
-        val delay = submitted()
-        delayMs.add(delay.inMilliseconds)
-        pendingTasks.add(pool.numPendingTasks)
-
-        val nextAt = Time.now + statsSampleInterval() - delay
-        // NOTE: if the delay happened to be longer than the sampling interval, the nextAt would be
-        // negative. Scheduling a task under a negative time would force the Timer to treat it as
-        // "run now". Thus the offloading delay is sampled at either 'sampleInterval' or 'delay',
-        // whichever is longer.
-        timer.schedule(nextAt)(SampleQueueStats.this())
-      }
-    }
-
-    def apply(): Unit = {
-      submitted = Stopwatch.start()
-      pool(task())
-    }
-  }
-
-  /**
-   * This handler is run when the submitted work is rejected from the ThreadPool, usually because
-   * its work queue has reached the proposed limit. When that happens, we simply run the work on
-   * the current thread (a thread that was trying to offload), which is most commonly a Netty IO
-   * worker.
-   */
-  private[finagle] final class RunsOnNettyThread(rejections: Counter)
-      extends RejectedExecutionHandler {
-    def rejectedExecution(r: Runnable, e: ThreadPoolExecutor): Unit = {
-      if (!e.isShutdown) {
-        rejections.incr()
-        r.run()
-      }
-    }
-  }
-
-  private[finagle] final class OffloadThreadPool(
-    poolSize: Int,
-    queueSize: Int,
-    stats: StatsReceiver)
-      extends ThreadPoolExecutor(
-        poolSize /*corePoolSize*/,
-        poolSize /*maximumPoolSize*/,
-        0L /*keepAliveTime*/,
-        TimeUnit.MILLISECONDS,
-        new LinkedBlockingQueue[Runnable](queueSize) /*workQueue*/,
-        new NamedPoolThreadFactory("finagle/offload", makeDaemons = true) /*threadFactory*/,
-        new RunsOnNettyThread(stats.counter("not_offloaded_tasks")))
-
-  private final class OffloadFuturePool(executor: ThreadPoolExecutor, stats: StatsReceiver)
-      extends ExecutorServiceFuturePool(executor) {
-    private val gauges = Seq(
-      stats.addGauge("pool_size") { poolSize },
-      stats.addGauge("active_tasks") { numActiveTasks },
-      stats.addGauge("completed_tasks") { numCompletedTasks },
-      stats.addGauge("queue_depth") { numPendingTasks }
-    )
-  }
+  @deprecated("Use the OffloadFuturePool.getPool method instead", "2021-06-07")
+  private[twitter] def offload[T](f: => T): Future[T] = OffloadFuturePool.getPool(f)
 
   private[this] val Description = "Offloading computations from IO threads"
   private[this] val ClientAnnotationKey = "clnt/finagle.offload_pool_size"
   private[this] val ServerAnnotationKey = "srv/finagle.offload_pool_size"
-
-  private[this] lazy val global: Option[FuturePool] = {
-    val workers =
-      numWorkers.get.orElse(if (auto()) Some(com.twitter.jvm.numProcs().ceil.toInt) else None)
-
-    workers.map { threads =>
-      val stats = FinagleStatsReceiver.scope("offload_pool")
-      val pool = new OffloadFuturePool(new OffloadThreadPool(threads, queueSize(), stats), stats)
-
-      // Start sampling the offload delay if the interval isn't Duration.Top.
-      if (statsSampleInterval().isFinite && statsSampleInterval() > Duration.Zero) {
-        val sampleStats = new SampleQueueStats(pool, stats, DefaultTimer)
-        sampleStats()
-      }
-
-      pool
-    }
-  }
 
   private[finagle] sealed abstract class Param
   private[finagle] object Param {
@@ -155,7 +41,8 @@ object OffloadFilter {
     final case object Disabled extends Param
 
     implicit val param: Stack.Param[Param] = new Stack.Param[Param] {
-      lazy val default: Param = global.map(Enabled.apply).getOrElse(Disabled)
+      lazy val default: Param =
+        OffloadFuturePool.configuredPool.map(Enabled.apply).getOrElse(Disabled)
 
       override def show(p: Param): Seq[(String, () => String)] = {
         val enabledStr = p match {
@@ -168,10 +55,10 @@ object OffloadFilter {
   }
 
   private[finagle] def client[Req, Rep]: Stackable[ServiceFactory[Req, Rep]] =
-    new Module[Req, Rep](new Client(_))
+    new ClientModule[Req, Rep]
 
   private[finagle] def server[Req, Rep]: Stackable[ServiceFactory[Req, Rep]] =
-    new Module[Req, Rep](new Server(_))
+    new ServerModule[Req, Rep]
 
   final class Client[Req, Rep](pool: FuturePool) extends SimpleFilter[Req, Rep] {
 
@@ -212,7 +99,6 @@ object OffloadFilter {
   final class Server[Req, Rep](pool: FuturePool) extends SimpleFilter[Req, Rep] {
 
     def apply(request: Req, service: Service[Req, Rep]): Future[Rep] = {
-
       // Offloading on the server-side is fairly straightforward: it comes down to running
       // service.apply (users' work) outside of the IO thread.
       //
@@ -259,12 +145,51 @@ object OffloadFilter {
     }
   }
 
-  private final class Module[Req, Rep](makeFilter: FuturePool => SimpleFilter[Req, Rep])
+  private final class ServerModule[Req, Rep] extends Stack.Module[ServiceFactory[Req, Rep]] {
+
+    def role: Stack.Role = Role
+    def description: String = Description
+    val parameters: Seq[Stack.Param[_]] = Seq(
+      Param.param,
+      ServerAdmissionControl.Param.param
+    )
+
+    def make(
+      params: Stack.Params,
+      next: Stack[ServiceFactory[Req, Rep]]
+    ): Stack[ServiceFactory[Req, Rep]] =
+      Stack.node(this, filtered(_, _), next)
+
+    private[this] def filtered(
+      params: Stack.Params,
+      next: Stack[ServiceFactory[Req, Rep]]
+    ): Stack[ServiceFactory[Req, Rep]] = {
+      val p = params[Param]
+      p match {
+        case Param.Disabled => next
+        case Param.Enabled(pool) =>
+          // This part injects the offload admission control filter, if applicable.
+          val nextParams = OffloadFilterAdmissionControl.maybeInjectAC(pool, params)
+          Stack.leaf(
+            role,
+            new Server(pool).andThen(next.make(nextParams))
+          )
+      }
+    }
+  }
+
+  private final class ClientModule[Req, Rep]
       extends Stack.Module1[Param, ServiceFactory[Req, Rep]] {
 
-    def make(p: Param, next: ServiceFactory[Req, Rep]): ServiceFactory[Req, Rep] = p match {
-      case Param.Enabled(pool) => makeFilter(pool).andThen(next)
-      case Param.Disabled => next
+    def make(
+      p: Param,
+      next: ServiceFactory[Req, Rep]
+    ): ServiceFactory[Req, Rep] = {
+      p match {
+        case Param.Enabled(pool) =>
+          new Client(pool).andThen(next)
+        case Param.Disabled => next
+      }
     }
 
     def role: Stack.Role = Role

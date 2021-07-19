@@ -2,28 +2,30 @@ package com.twitter.finagle.mux
 
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle._
-import com.twitter.finagle.client.{EndpointerStackClient, BackupRequestFilter}
+import com.twitter.finagle.client.{BackupRequestFilter, EndpointerStackClient}
 import com.twitter.finagle.context.RemoteInfo
 import com.twitter.finagle.mux.lease.exp.{Lessee, Lessor}
 import com.twitter.finagle.mux.transport.{BadMessageException, Message}
+import com.twitter.finagle.naming.BindingFactory
 import com.twitter.finagle.server.ListeningStackServer
 import com.twitter.finagle.service.Retries
+import com.twitter.finagle.stack.nilStack
 import com.twitter.finagle.stats.InMemoryStatsReceiver
 import com.twitter.finagle.tracing._
 import com.twitter.io.{Buf, BufByteWriter, ByteReader}
 import com.twitter.util._
 import java.io.{PrintWriter, StringWriter}
-import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket}
-import java.nio.ByteBuffer
+import java.net.{InetSocketAddress, Socket}
 import java.util.concurrent.atomic.AtomicInteger
 import org.scalactic.source.Position
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
 import org.scalatestplus.junit.AssertionsForJUnit
-import org.scalatest.{BeforeAndAfter, FunSuite, Tag}
+import org.scalatest.{BeforeAndAfter, Tag}
 import scala.language.reflectiveCalls
+import org.scalatest.funsuite.AnyFunSuite
 
 abstract class AbstractEndToEndTest
-    extends FunSuite
+    extends AnyFunSuite
     with Eventually
     with IntegrationPatience
     with BeforeAndAfter
@@ -36,7 +38,7 @@ abstract class AbstractEndToEndTest
   def skipWholeTest: Boolean = false
   def clientImpl(): ClientT
   def serverImpl(): ServerT
-  def await[A](f: Future[A]): A = Await.result(f, 5.seconds)
+  def await[A](f: Awaitable[A], timeout: Duration = 5.seconds): A = Await.result(f, timeout)
 
   var saveBase: Dtab = Dtab.empty
 
@@ -78,7 +80,7 @@ abstract class AbstractEndToEndTest
     Dtab.unwind {
       Dtab.local ++= Dtab.read("/foo=>/bar; /web=>/$/inet/twitter.com/80")
       for (n <- 0 until 2) {
-        val rsp = Await.result(client(Request(Path.empty, Nil, Buf.Empty)), 30.seconds)
+        val rsp = await(client(Request(Path.empty, Nil, Buf.Empty)), 30.seconds)
         val Buf.Utf8(str) = rsp.body
         assert(
           str.replace("\r", "") == "Dtab(2)\n\t/foo => /bar\n\t/web => /$/inet/twitter.com/80\n")
@@ -99,11 +101,35 @@ abstract class AbstractEndToEndTest
 
     val client = clientImpl.newService(getName(server), "client")
 
-    val payload = Await.result(client(Request.empty), 30.seconds).body
+    val payload = await(client(Request.empty), 30.seconds).body
     val br = ByteReader(payload)
 
     assert(br.remaining == 4)
     assert(br.readIntBE() == 0)
+    await(server.close())
+    await(client.close())
+  }
+
+  test(s"$implName: (no) Dtab propagation with Dtab.limited") {
+    val server = serverImpl.serve(
+      "localhost:*",
+      Service.mk[Request, Response] { _ =>
+        val bw = BufByteWriter.fixed(4)
+        bw.writeIntBE(Dtab.limited.size)
+        Future.value(Response(Nil, bw.owned()))
+      })
+
+    val client = clientImpl.newService(getName(server), "client")
+
+    Dtab.unwind {
+      Dtab.limited ++= Dtab.read("/foo=>/bar; /web=>/$/inet/twitter.com/80")
+      val payload = await(client(Request.empty), 30.seconds).body
+      val br = ByteReader(payload)
+
+      assert(br.remaining == 4)
+      assert(br.readIntBE() == 0)
+    }
+
     await(server.close())
     await(client.close())
   }
@@ -135,7 +161,7 @@ abstract class AbstractEndToEndTest
       .configured(param.Tracer(tracer))
       .newService(getName(server), "theClient")
 
-    Await.result(client(Request.empty), 30.seconds)
+    await(client(Request.empty), 30.seconds)
 
     eventually {
       assertAnnotationsInOrder(
@@ -151,8 +177,8 @@ abstract class AbstractEndToEndTest
       )
     }
 
-    Await.result(server.close(), 30.seconds)
-    Await.result(client.close(), 30.seconds)
+    await(server.close(), 30.seconds)
+    await(client.close(), 30.seconds)
   }
 
   test(s"$implName: requeue nacks") {
@@ -177,12 +203,12 @@ abstract class AbstractEndToEndTest
     val client = clientImpl.newService(name, "client")
 
     assert(n.get == 0)
-    assert(Await.result(client(Request.empty), 30.seconds).body.isEmpty)
+    assert(await(client(Request.empty), 30.seconds).body.isEmpty)
     assert(n.get == 2)
 
-    Await.result(a.close(), 30.seconds)
-    Await.result(b.close(), 30.seconds)
-    Await.result(client.close(), 30.seconds)
+    await(a.close(), 30.seconds)
+    await(b.close(), 30.seconds)
+    await(client.close(), 30.seconds)
   }
 
   test(s"$implName: propagate c.t.f.Failures") {
@@ -216,8 +242,8 @@ abstract class AbstractEndToEndTest
     check(Failure("Nope", FailureFlags.NonRetryable))
     check(Failure("", FailureFlags.Retryable))
 
-    Await.result(server.close(), 30.seconds)
-    Await.result(client.close(), 30.seconds)
+    await(server.close(), 30.seconds)
+    await(client.close(), 30.seconds)
   }
 
   test(s"$implName: gracefully reject sessions") {
@@ -232,13 +258,13 @@ abstract class AbstractEndToEndTest
     val client = clientImpl.newService(getName(server), "client")
 
     // This will try until it exhausts its budget. That's o.k.
-    val failure = intercept[Failure] { Await.result(client(Request.empty), 30.seconds) }
+    val failure = intercept[Failure] { await(client(Request.empty), 30.seconds) }
 
     // FailureFlags.Retryable is stripped.
     assert(!failure.isFlagged(FailureFlags.Retryable))
 
-    Await.result(server.close(), 30.seconds)
-    Await.result(client.close(), 30.seconds)
+    await(server.close(), 30.seconds)
+    await(client.close(), 30.seconds)
   }
 
   private[this] def nextPort(): Int = {
@@ -270,7 +296,7 @@ abstract class AbstractEndToEndTest
       await(client(req))
 
       // This will stop listening, drain, and then close the session.
-      Await.result(server.close(), 30.seconds)
+      await(server.close(), 30.seconds)
 
       // Thus the next request should fail at session establishment.
       intercept[Throwable] { await(client(req)) }
@@ -279,7 +305,7 @@ abstract class AbstractEndToEndTest
       server = serverImpl.serve(s"localhost:$port", echo)
       eventually { await(client(req)) }
 
-      Await.result(server.close(), 30.seconds)
+      await(server.close(), 30.seconds)
     }
 
   test(s"$implName: responds to lease") {
@@ -393,64 +419,7 @@ abstract class AbstractEndToEndTest
 
   test(s"$implName: Default client stack will add RemoteInfo on BadMessageException") {
 
-    class Server {
-      private lazy val address = new InetSocketAddress(InetAddress.getLoopbackAddress, 0)
-      private lazy val server = new ServerSocket()
-      @volatile private var client: Socket = _
-
-      private[this] def swallowMessage(): Unit = {
-        val is = client.getInputStream
-        val sizeField = (3 to 0 by -1).foldLeft(0) { (acc: Int, i: Int) =>
-          acc | (is.read().toByte << i)
-        }
-        // swallow sizeField bytes
-        (0 until sizeField).foreach(_ => is.read())
-      }
-
-      private[this] def swallowAndWrite(data: Array[Byte]): Unit = {
-        swallowMessage()
-        val os = client.getOutputStream
-        data.foreach(os.write(_))
-        os.flush()
-      }
-
-      private val serverThread = new Thread(new Runnable {
-        override def run(): Unit = {
-          client = server.accept()
-          // Length of 4 bytes, header of 0x00 00 00 04 (illegal: message type 0x00)
-          val rerr = Message.encode(Message.Rerr(1, "didn't work!"))
-          val badMessage = Array[Byte](0, 0, 0, 4, 0, 0, 0, 4)
-
-          val lengthField = {
-            val len = new Array[Byte](4)
-            val bb = ByteBuffer.wrap(len)
-            bb.putInt(rerr.length)
-            len
-          }
-
-          // write the message twice: once for handshaking and once for the failure
-          swallowAndWrite(lengthField ++ Buf.ByteArray.Shared.extract(rerr))
-          swallowAndWrite(badMessage)
-        }
-      })
-
-      def port = server.getLocalPort
-
-      def start(): Unit = {
-        server.bind(address)
-        serverThread.start()
-      }
-
-      def close(): Unit = {
-        serverThread.join(30.seconds.inMillis)
-        Option(client).foreach(_.close())
-        server.close()
-      }
-    }
-
-    val server = new Server
     val serviceName = "mux-client"
-
     val monitor = new Monitor {
       @volatile var exc: Throwable = _
       override def handle(exc: Throwable): Boolean = {
@@ -459,40 +428,54 @@ abstract class AbstractEndToEndTest
       }
     }
 
-    try {
-      server.start()
-      val sr = new InMemoryStatsReceiver
-      val client = clientImpl
-        .withLabel(serviceName)
-        .withStatsReceiver(sr)
-        .withMonitor(monitor)
-        .newService(s"${InetAddress.getLoopbackAddress.getHostAddress}:${server.port}")
+    val sr = new InMemoryStatsReceiver
+    val configuredClient = clientImpl
+      .withLabel(serviceName)
+      .withStatsReceiver(sr)
+      .withMonitor(monitor)
 
-      val result = await(client(Request.empty).liftToTry)
-      server.close()
+    val client = {
+      val factory =
+        ServiceFactory.const(Service.mk[Request, Response] { _ =>
+          Future.exception(Failure.wrap(BadMessageException("so sad")))
+        })
 
-      // The Monitor should have intercepted the Failure
-      assert(monitor.exc.isInstanceOf[Failure])
-      val failure = monitor.exc.asInstanceOf[Failure]
-
-      // The client should have yielded a BadMessageException
-      // because the Failure.module should have stripped the Failure
-      assert(result.isThrow)
-      assert(result.throwable.isInstanceOf[BadMessageException])
-      val exc = result.throwable.asInstanceOf[BadMessageException]
-
-      assert(failure.cause == Some(exc))
-
-      // RemoteInfo should have been added by the client stack
-      failure.getSource(Failure.Source.RemoteInfo) match {
-        case Some(a: RemoteInfo.Available) =>
-          assert(a.downstreamLabel == Some(serviceName))
-          assert(a.downstreamAddr.isDefined)
-
-        case other => fail(s"Unexpected remote info: $other")
+      val module = new Stack.Module[ServiceFactory[Request, Response]] {
+        def role: Stack.Role = Stack.Role("sadface")
+        def description: String = "sadface"
+        def parameters: Seq[Stack.Param[_]] = Nil
+        def make(
+          params: Stack.Params,
+          next: Stack[ServiceFactory[Request, Response]]
+        ): Stack[ServiceFactory[Request, Response]] = Stack.leaf(this, factory)
       }
-    } finally {
-      server.close()
+
+      val stack = configuredClient.stack ++ (module +: nilStack)
+      stack
+        .make(configuredClient.params + BindingFactory.Dest(Resolver.eval(s":*"))).toService
+    }
+
+    val result = await(client(Request.empty).liftToTry, 30.seconds)
+
+    // The Monitor should have intercepted the Failure
+    assert(monitor.exc.isInstanceOf[Failure])
+    val failure = monitor.exc.asInstanceOf[Failure]
+
+    // The client should have yielded a BadMessageException
+    // because the Failure.module should have stripped the Failure
+    assert(result.isThrow)
+    assert(result.throwable.isInstanceOf[BadMessageException])
+    val exc = result.throwable.asInstanceOf[BadMessageException]
+
+    assert(failure.cause == Some(exc))
+
+    // RemoteInfo should have been added by the client stack
+    failure.getSource(Failure.Source.RemoteInfo) match {
+      case Some(a: RemoteInfo.Available) =>
+        assert(a.downstreamLabel == Some(serviceName))
+        assert(a.downstreamAddr.isDefined)
+
+      case other => fail(s"Unexpected remote info: $other")
     }
   }
 
@@ -506,14 +489,14 @@ abstract class AbstractEndToEndTest
     Time.withCurrentTimeFrozen(BackupRequests.mkRequestWithBackup(client))
 
     val e = intercept[ClientDiscardedRequestException] {
-      Await.result(slow, 5.seconds)
+      await(slow, 5.seconds)
     }
 
     assert(e.getMessage == BackupRequestFilter.SupersededRequestFailureToString)
     assert(e.flags == (FailureFlags.Interrupted | FailureFlags.Ignorable))
 
-    Await.result(client.close(), 5.seconds)
-    Await.result(server.close(), 5.seconds)
+    await(client.close(), 5.seconds)
+    await(server.close(), 5.seconds)
   }
 
   test("BackupRequestFilter's interrupts are propagated multiple levels as ignorable") {
@@ -539,12 +522,12 @@ abstract class AbstractEndToEndTest
     assert(e.getMessage == BackupRequestFilter.SupersededRequestFailureToString)
     assert(e.flags == (FailureFlags.Interrupted | FailureFlags.Ignorable))
 
-    Await.result(client.close(), 5.seconds)
-    Await.result(proxy2Server.close(), 5.seconds)
-    Await.result(proxy2Client.close(), 5.seconds)
-    Await.result(proxy1Server.close(), 5.seconds)
-    Await.result(proxy1Client.close(), 5.seconds)
-    Await.result(server.close(), 5.seconds)
+    await(client.close(), 5.seconds)
+    await(proxy2Server.close(), 5.seconds)
+    await(proxy2Client.close(), 5.seconds)
+    await(proxy1Server.close(), 5.seconds)
+    await(proxy1Client.close(), 5.seconds)
+    await(server.close(), 5.seconds)
   }
 
 }

@@ -2,14 +2,15 @@ package com.twitter.finagle.stats
 
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.http.{MediaType, Request, RequestParamMap}
+import com.twitter.finagle.stats.MetricBuilder.{CounterType, GaugeType}
 import com.twitter.finagle.util.DefaultTimer
 import com.twitter.util.tunable.Tunable
 import com.twitter.util.{Await, MockTimer, Time}
 import java.io.{BufferedWriter, File, FileOutputStream, OutputStreamWriter}
-import org.scalatest.FunSuite
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
+import org.scalatest.funsuite.AnyFunSuite
 
-class JsonExporterTest extends FunSuite with Eventually with IntegrationPatience {
+class JsonExporterTest extends AnyFunSuite with Eventually with IntegrationPatience {
 
   import JsonExporter._
 
@@ -139,18 +140,18 @@ class JsonExporterTest extends FunSuite with Eventually with IntegrationPatience
     val registry = Metrics.createDetached()
     val viewsCounter = registry
       .getOrCreateCounter(
-        CounterSchema(
-          new MetricBuilder(
-            verbosity = Verbosity.Default,
-            name = Seq("views"),
-            statsReceiver = null))).counter
+        MetricBuilder(
+          verbosity = Verbosity.Default,
+          name = Seq("views"),
+          metricType = CounterType,
+          statsReceiver = null)).counter
     val gcCounter = registry
       .getOrCreateCounter(
-        CounterSchema(
-          new MetricBuilder(
-            verbosity = Verbosity.Default,
-            name = Seq("jvm_gcs"),
-            statsReceiver = null))).counter
+        MetricBuilder(
+          verbosity = Verbosity.Default,
+          name = Seq("jvm_gcs"),
+          metricType = CounterType,
+          statsReceiver = null)).counter
     viewsCounter.incr()
     gcCounter.incr()
     val exporter = new JsonExporter(registry) {
@@ -203,11 +204,11 @@ class JsonExporterTest extends FunSuite with Eventually with IntegrationPatience
     val counter =
       registry
         .getOrCreateCounter(
-          CounterSchema(
-            new MetricBuilder(
-              verbosity = Verbosity.Default,
-              name = Seq(name),
-              statsReceiver = null))).counter
+          MetricBuilder(
+            verbosity = Verbosity.Default,
+            name = Seq(name),
+            metricType = CounterType,
+            statsReceiver = null)).counter
 
     val timer = new MockTimer()
     val exporter = new JsonExporter(registry, timer)
@@ -264,11 +265,11 @@ class JsonExporterTest extends FunSuite with Eventually with IntegrationPatience
     val registry = Metrics.createDetached()
     val counter = registry
       .getOrCreateCounter(
-        CounterSchema(
-          new MetricBuilder(
-            verbosity = Verbosity.Default,
-            name = Seq("anCounter"),
-            statsReceiver = null))).counter
+        MetricBuilder(
+          verbosity = Verbosity.Default,
+          name = Seq("anCounter"),
+          metricType = CounterType,
+          statsReceiver = null)).counter
     counter.incr(11)
 
     val timer = new MockTimer()
@@ -320,11 +321,11 @@ class JsonExporterTest extends FunSuite with Eventually with IntegrationPatience
     val registry = Metrics.createDetached()
     val sr =
       registry.registerGauge(
-        GaugeSchema(
-          new MetricBuilder(
-            verbosity = Verbosity.Default,
-            name = Seq("boom"),
-            statsReceiver = null)),
+        MetricBuilder(
+          verbosity = Verbosity.Default,
+          name = Seq("boom"),
+          metricType = GaugeType,
+          statsReceiver = null),
         throw new RuntimeException("loolool"))
 
     val exporter = new JsonExporter(registry)

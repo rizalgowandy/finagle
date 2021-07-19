@@ -3,15 +3,20 @@ package com.twitter.finagle.loadbalancer.aperture
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.Address.Inet
 import com.twitter.finagle._
-import com.twitter.finagle.loadbalancer.{EndpointFactory, FailingEndpointFactory, NodeT}
+import com.twitter.finagle.loadbalancer.{EndpointFactory, NodeT}
 import com.twitter.finagle.stats.{InMemoryStatsReceiver, NullStatsReceiver, StatsReceiver}
 import com.twitter.finagle.util.Rng
 import com.twitter.util.{Activity, Await, Duration, NullTimer, Var}
 import java.net.InetSocketAddress
 import org.scalactic.source.Position
-import org.scalatest.{FunSuite, Tag}
+import org.scalatest.Tag
+import org.scalatest.funsuite.AnyFunSuite
 
-class ApertureTest extends FunSuite with ApertureSuite {
+class ApertureTest extends BaseApertureTest(doesManageWeights = false)
+
+abstract class BaseApertureTools(doesManageWeights: Boolean)
+    extends AnyFunSuite
+    with ApertureSuite {
 
   /**
    * A simple aperture balancer which doesn't have a controller or load metric
@@ -24,15 +29,19 @@ class ApertureTest extends FunSuite with ApertureSuite {
    * uses P2C to select nodes, we inherit the same probabilistic properties that help
    * us avoid down nodes with the important caveat that we only select over a subset.
    */
-  private class Bal extends TestBal {
+  private[aperture] class Bal extends TestBal {
 
+    val manageWeights: Boolean = doesManageWeights
     protected def nodeLoad: Double = 0.0
 
     protected def statsReceiver: StatsReceiver = NullStatsReceiver
-    protected class Node(val factory: EndpointFactory[Unit, Unit])
+    class Node(val factory: EndpointFactory[Unit, Unit])
         extends ServiceFactoryProxy[Unit, Unit](factory)
         with NodeT[Unit, Unit]
-        with ApertureNode {
+        with ApertureNode[Unit, Unit] {
+
+      override def tokenRng: Rng = rng
+
       // We don't need a load metric since this test only focuses on
       // the internal behavior of aperture.
       def id: Int = 0
@@ -44,15 +53,16 @@ class ApertureTest extends FunSuite with ApertureSuite {
     protected def newNode(factory: EndpointFactory[Unit, Unit]): Node =
       new Node(factory)
 
-    protected def failingNode(cause: Throwable): Node =
-      new Node(new FailingEndpointFactory[Unit, Unit](cause))
-
     var rebuilds: Int = 0
     override def rebuild(): Unit = {
       rebuilds += 1
       super.rebuild()
     }
   }
+}
+
+abstract class BaseApertureTest(doesManageWeights: Boolean)
+    extends BaseApertureTools(doesManageWeights) {
 
   // Ensure the flag value is 12 since many of the tests depend on it.
   override protected def test(
@@ -84,7 +94,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
         timer = new NullTimer,
         emptyException = new NoBrokersAvailableException,
         useDeterministicOrdering = None,
-        withEagerConnections = () => false
+        eagerConnections = false,
+        manageWeights = doesManageWeights
       )
     }
   }
@@ -106,7 +117,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(true),
-      withEagerConnections = () => false
+      eagerConnections = false,
+      manageWeights = doesManageWeights
     )
 
     assert(!stats.gauges.contains(Seq("loadband", "offered_load_ema")))
@@ -130,7 +142,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(false),
-      withEagerConnections = () => false
+      eagerConnections = false,
+      manageWeights = doesManageWeights
     )
 
     assert(stats.gauges.contains(Seq("loadband", "offered_load_ema")))
@@ -155,7 +168,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(false),
-      withEagerConnections = () => false
+      eagerConnections = false,
+      manageWeights = doesManageWeights
     )
 
     assert(stats.gauges.contains(Seq("loadband", "offered_load_ema")))
@@ -181,7 +195,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(true),
-      withEagerConnections = () => true
+      eagerConnections = true,
+      manageWeights = doesManageWeights
     )
     assert(factories.forall(_.total == 1))
 
@@ -208,7 +223,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(true),
-      withEagerConnections = () => false
+      eagerConnections = false,
+      manageWeights = doesManageWeights
     )
     assert(stats.counters(Seq("rebuilds")) == 1)
 
@@ -239,7 +255,8 @@ class ApertureTest extends FunSuite with ApertureSuite {
       timer = new NullTimer,
       emptyException = new NoBrokersAvailableException,
       useDeterministicOrdering = Some(true),
-      withEagerConnections = () => false
+      eagerConnections = false,
+      manageWeights = doesManageWeights
     )
     assert(stats.counters(Seq("rebuilds")) == 1)
 
@@ -256,7 +273,7 @@ class ApertureTest extends FunSuite with ApertureSuite {
   test("minAperture <= vector.size") {
     val min = 100
     val bal = new Bal {
-      override protected val minAperture = min
+      override private[aperture] val minAperture = min
     }
 
     val counts = new Counts
@@ -272,7 +289,7 @@ class ApertureTest extends FunSuite with ApertureSuite {
   test("aperture <= vector.size") {
     val min = 100
     val bal = new Bal {
-      override protected val minAperture = min
+      override private[aperture] val minAperture = min
     }
 
     val counts = new Counts
@@ -321,7 +338,7 @@ class ApertureTest extends FunSuite with ApertureSuite {
   test("min aperture size is not > the number of active nodes") {
     val counts = new Counts
     val bal = new Bal {
-      override protected val minAperture = 4
+      override private[aperture] val minAperture = 4
     }
 
     bal.update(counts.range(10))
@@ -519,9 +536,7 @@ class ApertureTest extends FunSuite with ApertureSuite {
   }
 
   test("order maintained when status flaps") {
-    val bal = new Bal {
-      override protected val useDeterministicOrdering = Some(true)
-    }
+    val bal = new Bal
 
     ProcessCoordinate.unsetCoordinate()
 
@@ -586,6 +601,29 @@ class ApertureTest extends FunSuite with ApertureSuite {
     bal.applyn(3000)
 
     ProcessCoordinate.unsetCoordinate()
+
+    val requests = counts.toIterator.map(_._total).toVector
+    val avg = requests.sum.toDouble / requests.size
+    val relativeDiffs = requests.map { i => math.abs(avg - i) / avg }
+    relativeDiffs.foreach { i => assert(i < 0.05) }
+  }
+
+  test("'p2c' d-aperture doesn't unduly bias") {
+    val counts = new Counts
+    val bal = new Bal {
+      override val minAperture = 1
+      override protected def nodeLoad: Double = 1.0
+      override val useDeterministicOrdering: Option[Boolean] = Some(true)
+    }
+
+    // If no ProcessCoordinate is set but useDeterministicOrdering is true, we should fall back
+    // to the p2c-style deterministic aperture (one instance, no peers)
+    ProcessCoordinate.unsetCoordinate()
+    bal.update(counts.range(3))
+    bal.rebuildx()
+    assert(bal.isDeterministicAperture)
+    assert(bal.minUnitsx == 3)
+    bal.applyn(3000)
 
     val requests = counts.toIterator.map(_._total).toVector
     val avg = requests.sum.toDouble / requests.size

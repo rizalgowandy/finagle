@@ -4,11 +4,12 @@ import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.Address
 import com.twitter.finagle.loadbalancer.{EndpointFactory, LazyEndpointFactory}
 import com.twitter.finagle.ServiceFactoryProxy
-import com.twitter.finagle.stats.{StatsReceiver, InMemoryStatsReceiver}
+import com.twitter.finagle.stats.{InMemoryStatsReceiver, StatsReceiver}
+import com.twitter.finagle.util.Rng
 import com.twitter.util._
-import org.scalatest.fixture.FunSuite
+import org.scalatest.funsuite.FixtureAnyFunSuite
 
-class ExpirationTest extends FunSuite with ApertureSuite {
+class ExpirationTest extends FixtureAnyFunSuite with ApertureSuite {
 
   /**
    * An aperture load balancer which mixes in expiration but no
@@ -22,6 +23,7 @@ class ExpirationTest extends FunSuite with ApertureSuite {
       extends TestBal
       with Expiration[Unit, Unit] {
 
+    val manageWeights: Boolean = false
     def expired: Long = stats.counters(Seq("expired"))
     def noExpired: Boolean = stats.counters(Seq("expired")) == 0
 
@@ -33,14 +35,14 @@ class ExpirationTest extends FunSuite with ApertureSuite {
     case class Node(factory: EndpointFactory[Unit, Unit])
         extends ServiceFactoryProxy[Unit, Unit](factory)
         with ExpiringNode
-        with ApertureNode {
+        with ApertureNode[Unit, Unit] {
+      override def tokenRng: Rng = rng
       def load: Double = 0
       def pending: Int = 0
       override val token: Int = 0
     }
 
     protected def newNode(factory: EndpointFactory[Unit, Unit]): Node = Node(factory)
-    protected def failingNode(cause: Throwable): Node = ???
 
     override def close(when: Time) = {
       expiryTask.cancel()

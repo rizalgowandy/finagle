@@ -2,10 +2,10 @@ package com.twitter.finagle.loadbalancer.aperture
 
 import com.twitter.finagle.util.Rng
 import org.scalacheck.Gen
-import org.scalatest.FunSuite
 import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
+import org.scalatest.funsuite.AnyFunSuite
 
-class RingTest extends FunSuite with ScalaCheckDrivenPropertyChecks {
+class RingTest extends AnyFunSuite with ScalaCheckDrivenPropertyChecks {
   val rng = Rng(12345L)
 
   def histo(seq: Seq[Int]): Map[Int, Int] =
@@ -46,7 +46,8 @@ class RingTest extends FunSuite with ScalaCheckDrivenPropertyChecks {
         val offset: Double = (clientId * localUnitWidth) % 1.0
 
         val ring = new Ring(remoteSize, Rng(123))
-        val apWidth = Aperture.dApertureWidth(localUnitWidth, remoteUnitWidth, minAperture)
+        val apWidth =
+          DeterministicAperture.dApertureWidth(localUnitWidth, remoteUnitWidth, minAperture)
 
         withClue(s"clientId: $clientId, offset: $offset, aperture width: $apWidth") {
           val ringRange = ring.range(offset, apWidth)

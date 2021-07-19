@@ -12,8 +12,8 @@ import com.twitter.finagle.util.Rng
 import com.twitter.util.{Function => _, _}
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
-import org.scalatest.FunSuite
 import com.twitter.finagle.loadbalancer.distributor.AddrLifecycle
+import org.scalatest.funsuite.AnyFunSuite
 
 private object TrafficDistributorTest {
   def await[A](f: Future[A]): A = Await.result(f, 5.seconds)
@@ -168,13 +168,13 @@ private object TrafficDistributorTest {
   private class CumulativeGaugeInMemoryStatsReceiver extends StatsReceiverWithCumulativeGauges {
     private[this] val underlying = new InMemoryStatsReceiver()
     override val repr: AnyRef = this
-    override def counter(schema: CounterSchema): ReadableCounter =
-      underlying.counter(schema)
-    override def stat(schema: HistogramSchema): ReadableStat =
-      underlying.stat(schema)
+    override def counter(metricBuilder: MetricBuilder): ReadableCounter =
+      underlying.counter(metricBuilder)
+    override def stat(metricBuilder: MetricBuilder): ReadableStat =
+      underlying.stat(metricBuilder)
 
-    protected[this] def registerGauge(schema: GaugeSchema, f: => Float): Unit =
-      underlying.addGauge(schema.metricBuilder.name: _*)(f)
+    protected[this] def registerGauge(metricBuilder: MetricBuilder, f: => Float): Unit =
+      underlying.addGauge(metricBuilder.name: _*)(f)
 
     protected[this] def deregisterGauge(name: Seq[String]): Unit =
       underlying.gauges -= name
@@ -188,7 +188,7 @@ private object TrafficDistributorTest {
   }
 }
 
-class TrafficDistributorTest extends FunSuite {
+class TrafficDistributorTest extends AnyFunSuite {
   import TrafficDistributorTest._
 
   test("repicks against a busy balancer")(new Ctx {

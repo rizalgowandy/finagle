@@ -2,7 +2,7 @@ package com.twitter.finagle.thriftmux
 
 import com.twitter.finagle.{client, _}
 import com.twitter.finagle.builder.{ClientBuilder, ClientConfig}
-import com.twitter.finagle.client.RefcountedClosable
+import com.twitter.finagle.client.MethodPool
 import com.twitter.finagle.service.ResponseClassifier
 import com.twitter.finagle.thrift.exp.partitioning.{PartitioningStrategy, ThriftPartitioningService}
 import com.twitter.finagle.thrift.service.{Filterable, ServicePerEndpointBuilder}
@@ -53,11 +53,12 @@ object MethodBuilder {
     val stack = modifiedStack(thriftMuxClient.stack)
       .replace(ThriftPartitioningService.role, DynamicPartitioningService.perRequestModule)
     val params = thriftMuxClient.params
-    val service: Service[ThriftClientRequest, Array[Byte]] = thriftMuxClient
-      .withStack(stack)
-      .newService(dest, param.Label.Default)
+
     val mb = new client.MethodBuilder[ThriftClientRequest, Array[Byte]](
-      new RefcountedClosable(service),
+      new MethodPool[ThriftClientRequest, Array[Byte]](
+        thriftMuxClient.withStack(stack),
+        dest,
+        param.Label.Default),
       dest,
       stack,
       params,
@@ -353,7 +354,9 @@ class MethodBuilder(
     implicit builder: ServiceIfaceBuilder[ServiceIface]
   ): ServiceIface = {
     val clientBuilder = new ClientServiceIfaceBuilder[ServiceIface](builder)
-    mb.newServicePerEndpoint(clientBuilder, methodName)
+
+    mb.configured(Thrift.param.ServiceClass(Option(clientBuilder.serviceClass)))
+      .newServicePerEndpoint(clientBuilder, methodName)
   }
 
   /**
@@ -367,7 +370,9 @@ class MethodBuilder(
     implicit builder: ServicePerEndpointBuilder[ServicePerEndpoint]
   ): ServicePerEndpoint = {
     val clientBuilder = new ClientServicePerEndpointBuilder[ServicePerEndpoint](builder)
-    mb.newServicePerEndpoint(clientBuilder, methodName).getServicePerEndpoint
+
+    mb.configured(Thrift.param.ServiceClass(Option(clientBuilder.serviceClass)))
+      .newServicePerEndpoint(clientBuilder, methodName).getServicePerEndpoint
   }
 
   /**
@@ -377,7 +382,9 @@ class MethodBuilder(
     implicit builder: ServicePerEndpointBuilder[ServicePerEndpoint]
   ): ServicePerEndpoint = {
     val clientBuilder = new ClientServicePerEndpointBuilder[ServicePerEndpoint](builder)
-    mb.newServicePerEndpoint(clientBuilder).getServicePerEndpoint
+
+    mb.configured(Thrift.param.ServiceClass(Option(builder.serviceClass)))
+      .newServicePerEndpoint(clientBuilder).getServicePerEndpoint
   }
 
   final private class ClientServiceIfaceBuilder[ServiceIface <: Filterable[ServiceIface]](
@@ -390,6 +397,8 @@ class MethodBuilder(
     override def servicePerEndpoint(
       service: => Service[ThriftClientRequest, Array[Byte]]
     ): ServiceIface = thriftMuxClient.newServiceIface(service, label)(builder)
+
+    override def serviceClass: Class[_] = builder.serviceClass
   }
 
   final private class ClientServicePerEndpointBuilder[
@@ -412,6 +421,8 @@ class MethodBuilder(
         )(builder)
       )
     }
+
+    override def serviceClass: Class[_] = builder.serviceClass
   }
 
   // used to delay creation of the Service until the first request

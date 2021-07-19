@@ -1,7 +1,7 @@
 package com.twitter.finagle
 
 import scala.annotation.{implicitNotFound, tailrec}
-import scala.collection.mutable
+import scala.collection.{mutable, immutable}
 
 /**
  * Stacks represent stackable elements of type T. It is assumed that
@@ -694,6 +694,49 @@ object Stack {
         next
       )
   }
+
+  /** A module of 8 parameters. */
+  abstract class Module8[
+    P1: Param,
+    P2: Param,
+    P3: Param,
+    P4: Param,
+    P5: Param,
+    P6: Param,
+    P7: Param,
+    P8: Param,
+    T] extends Stackable[T] {
+    final val parameters: Seq[Stack.Param[_]] = Seq(
+      implicitly[Param[P1]],
+      implicitly[Param[P2]],
+      implicitly[Param[P3]],
+      implicitly[Param[P4]],
+      implicitly[Param[P5]],
+      implicitly[Param[P6]],
+      implicitly[Param[P7]],
+      implicitly[Param[P8]]
+    )
+    def make(p1: P1, p2: P2, p3: P3, p4: P4, p5: P5, p6: P6, p7: P7, p8: P8, next: T): T
+    def toStack(next: Stack[T]): Stack[T] =
+      Node(
+        this,
+        (prms, next) =>
+          Leaf(
+            this,
+            make(
+              prms[P1],
+              prms[P2],
+              prms[P3],
+              prms[P4],
+              prms[P5],
+              prms[P6],
+              prms[P7],
+              prms[P8],
+              next.make(prms))
+          ),
+        next
+      )
+  }
 }
 
 /**
@@ -713,6 +756,31 @@ object Stack {
 abstract class StackTransformer extends Stack.Transformer {
   def name: String
   override def toString: String = s"StackTransformer(name=$name)"
+}
+
+/**
+ * A [[TransformerCollection]] is a collection of transformers which are typically
+ * used globally by a stack. For example, both StackClient and StackServer have
+ * a global collection of [[StackTransformers]] which can be "injected" before
+ * the stack is materialized for all clients/servers in a process.
+ *
+ * This is purely additive and there isn't a way to remove elements from this collection
+ * to limit the type mutations allowed.
+ */
+abstract class StackTransformerCollection {
+  @volatile private var underlying = immutable.Queue.empty[StackTransformer]
+
+  def append(transformer: StackTransformer): Unit =
+    synchronized { underlying = underlying :+ transformer }
+
+  def transformers: Seq[StackTransformer] =
+    underlying
+
+  // Used for testing only! Allows us to clear any state that we set here
+  // so we don't pollute other tests.
+  private[finagle] def clear(): Unit = synchronized {
+    underlying = immutable.Queue.empty[StackTransformer]
+  }
 }
 
 /**

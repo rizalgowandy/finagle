@@ -5,9 +5,9 @@ import com.twitter.finagle._
 import com.twitter.finagle.context.{Contexts, Retries}
 import com.twitter.finagle.stack.nilStack
 import com.twitter.util.{Promise, Await, Future}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class ClearContextValueFilterTest extends FunSuite {
+class ClearContextValueFilterTest extends AnyFunSuite {
 
   trait Helper {
     val setContextFilterCalled = new Promise[Unit]
@@ -29,7 +29,7 @@ class ClearContextValueFilterTest extends FunSuite {
           }.andThen(next)
       }
 
-    val clearContextfilter = ClearContextValueFilter.module[Unit, Unit](Retries)
+    val clearContextFilter = ClearContextValueFilter.module[Unit, Unit](Retries)
 
     val verifyContextClearedFilter =
       new Stack.Module0[ServiceFactory[Unit, Unit]] {
@@ -58,7 +58,7 @@ class ClearContextValueFilterTest extends FunSuite {
       val factory = new StackBuilder[ServiceFactory[Unit, Unit]](nilStack[Unit, Unit])
         .push(svcModule)
         .push(verifyContextClearedFilter)
-        .push(clearContextfilter)
+        .push(clearContextFilter)
         .push(setContextFilter)
         .make(Stack.Params.empty)
 
@@ -74,7 +74,7 @@ class ClearContextValueFilterTest extends FunSuite {
       val factory = new StackBuilder[ServiceFactory[Unit, Unit]](nilStack[Unit, Unit])
         .push(svcModule)
         .push(verifyContextClearedFilter)
-        .push(clearContextfilter)
+        .push(clearContextFilter)
         .make(Stack.Params.empty)
 
       val svc: Service[Unit, Unit] = Await.result(factory(), 1.second)

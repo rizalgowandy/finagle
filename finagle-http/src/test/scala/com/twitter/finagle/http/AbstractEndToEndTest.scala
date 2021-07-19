@@ -8,7 +8,7 @@ import com.twitter.finagle.builder.ClientBuilder
 import com.twitter.finagle.context.{Contexts, Deadline, Retries}
 import com.twitter.finagle.filter.ServerAdmissionControl
 import com.twitter.finagle.http.codec.context.LoadableHttpContext
-import com.twitter.finagle.http.service.{HttpResponseClassifier, NullService}
+import com.twitter.finagle.http.service.HttpResponseClassifier
 import com.twitter.finagle.http.{Status => HttpStatus}
 import com.twitter.finagle.http2.param.EncoderIgnoreMaxHeaderListSize
 import com.twitter.finagle.liveness.{FailureAccrualFactory, FailureDetector}
@@ -23,9 +23,10 @@ import java.io.{PrintWriter, StringWriter}
 import java.net.{InetAddress, InetSocketAddress}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import org.scalactic.source.Position
-import org.scalatest.{BeforeAndAfter, FunSuite, OneInstancePerTest, Tag}
+import org.scalatest.{BeforeAndAfter, OneInstancePerTest, Tag}
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
 import scala.language.reflectiveCalls
+import org.scalatest.funsuite.AnyFunSuite
 
 // copied from finagle-base-http HttpContext test for marshalling external custom context type via
 // LoadService. We have an end-to-end test here as well
@@ -56,7 +57,7 @@ class LoadedNameContext extends LoadableHttpContext {
 }
 
 abstract class AbstractEndToEndTest
-    extends FunSuite
+    extends AnyFunSuite
     with BeforeAndAfter
     with Eventually
     with IntegrationPatience
@@ -66,7 +67,6 @@ abstract class AbstractEndToEndTest
   object ClientAbort extends Feature
   object NoBodyMessage extends Feature
   object MaxHeaderSize extends Feature
-  object RequiresAsciiFilter extends Feature
 
   var saveBase: Dtab = Dtab.empty
   var statsRecv: InMemoryStatsReceiver = new InMemoryStatsReceiver()
@@ -409,8 +409,6 @@ abstract class AbstractEndToEndTest
     test(implName + ": (no) dtab") {
       val service = new HttpService {
         def apply(request: Request) = {
-          val stringer = new StringWriter
-
           val response = Response(request)
           response.contentString = "%d".format(Dtab.local.length)
           Future.value(response)
@@ -421,6 +419,27 @@ abstract class AbstractEndToEndTest
 
       val res = await(client(Request("/")))
       assert(res.contentString == "0")
+
+      await(client.close())
+    }
+
+    test(implName + ": Dtab.limited does not propagate") {
+      val service = new HttpService {
+        def apply(request: Request) = {
+          val response = Response(request)
+          response.contentString = "%d".format(Dtab.limited.length)
+          Future.value(response)
+        }
+      }
+
+      val client = connect(service)
+
+      Dtab.unwind {
+        Dtab.limited ++= Dtab.read("/a=>/b; /c=>/d")
+
+        val res = await(client(Request("/")))
+        assert(res.contentString == "0")
+      }
 
       await(client.close())
     }
@@ -1378,9 +1397,16 @@ abstract class AbstractEndToEndTest
     await(service.close())
   }
 
-  testIfImplemented(RequiresAsciiFilter)(
-    "server responds with 400 Bad Request if non-ascii character is present in uri") {
-    val service = NullService
+  test("client throws InvalidUriException with non-ascii character is present in uri") {
+    val expected = "/DSC02175拷貝.jpg"
+    // we shouldn't hit the service code, but if we do it is because something was incorrectly
+    // filtered out in the netty pipeline and this will help debug.
+    val service = Service.mk[Request, Response] {
+      case req if req.uri == expected =>
+        Future.value(Response())
+      case req =>
+        Future.exception(new Exception(s"Unexpected request URI: ${req.uri}"))
+    }
     val server = serverImpl().withStatsReceiver(NullStatsReceiver).serve("localhost:*", service)
     val addr = server.boundAddress.asInstanceOf[InetSocketAddress]
 
@@ -1389,8 +1415,35 @@ abstract class AbstractEndToEndTest
       .newService(s"${addr.getHostName}:${addr.getPort}", "client")
 
     try {
-      val rep = await(client(Request("/DSC02175拷貝.jpg")))
-      assert(rep.status == HttpStatus.BadRequest)
+      intercept[InvalidUriException] {
+        await(client(Request(expected)))
+      }
+    } finally {
+      await(client.close())
+      await(server.close())
+    }
+  }
+
+  test("client throws InvalidUriException with illegal character encoding is present in uri") {
+    val expected = "/example/routing/json/1%%"
+
+    // we shouldn't hit the service code, but if we do it is because something was incorrectly
+    // filtered out in the netty pipeline and this will help debug.
+    val service = Service.mk[Request, Response] {
+      case req if req.uri == expected => Future.value(Response())
+      case req => Future.exception(new Exception(s"Unexpected request URI: ${req.uri}"))
+    }
+    val server = serverImpl().withStatsReceiver(NullStatsReceiver).serve("localhost:*", service)
+    val addr = server.boundAddress.asInstanceOf[InetSocketAddress]
+
+    val client = clientImpl()
+      .withStatsReceiver(NullStatsReceiver)
+      .newService(s"${addr.getHostName}:${addr.getPort}", "client")
+
+    try {
+      intercept[InvalidUriException] {
+        await(client(Request(expected)))
+      }
     } finally {
       await(client.close())
       await(server.close())

@@ -14,14 +14,16 @@ import com.twitter.util.routing.{
   RouterInfo
 }
 import com.twitter.util.{Await, Awaitable, Future, Return, Throw}
-import org.scalatest.FunSuite
 import scala.util.control.NonFatal
+import org.scalatest.funsuite.AnyFunSuite
 
 private object RoutingServiceTest {
 
   case class SvcSchema(fn: Int => Boolean)
 
   type Route = com.twitter.finagle.exp.routing.Route[Int, String, SvcSchema]
+
+  object CustomField extends RouteField[String]
 
   class StringRouter(
     label: String,
@@ -58,7 +60,7 @@ private object RoutingServiceTest {
 
 }
 
-class RoutingServiceTest extends FunSuite {
+class RoutingServiceTest extends AnyFunSuite {
   import RoutingServiceTest._
 
   def await[T](awaitable: Awaitable[T]): T = Await.result(awaitable, 1.second)
@@ -246,6 +248,29 @@ class RoutingServiceTest extends FunSuite {
     assert(found() == 3)
     assert(handledFailures() == 1)
     assert(unhandledFailures() == 1)
+  }
+
+  test("routes can define and access custom fields") {
+    val evenRouter = newBuilder
+      .withRoute(
+        Route
+          .wrap(
+            label = "evens",
+            schema = SvcSchema(_ % 2 == 0),
+            service = Service.mk[Int, String](i => Future.value(i.toString))
+          ).set(CustomField, "evens, not odds")
+      )
+      .newRouter()
+
+    evenRouter(Request(4)) match {
+      case Found(_, route) =>
+        val field = route
+          .asInstanceOf[Route].getOrElse(
+            CustomField,
+            throw new IllegalStateException("No CustomField present on route!"))
+        assert(field == "evens, not odds")
+      case error => fail(s"received unexpected result: $error")
+    }
   }
 
 }

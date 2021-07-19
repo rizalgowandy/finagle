@@ -1,13 +1,16 @@
 import Tests._
 import scoverage.ScoverageKeys
 
+Global / onChangedBuildSource := ReloadOnSourceChanges
+Global / excludeLintKeys += scalacOptions
+
 // All Twitter library releases are date versioned as YY.MM.patch
-val releaseVersion = "21.3.0-SNAPSHOT"
+val releaseVersion = "21.7.0-SNAPSHOT"
 
 val libthriftVersion = "0.10.0"
 
-val defaultNetty4Version = "4.1.51.Final"
-val defaultNetty4StaticSslVersion = "2.0.34.Final"
+val defaultNetty4Version = "4.1.59.Final"
+val defaultNetty4StaticSslVersion = "2.0.35.Final"
 
 val useNettySnapshot: Boolean = sys.env.get("FINAGLE_USE_NETTY_4_SNAPSHOT") match {
   case Some(useSnapshot) => useSnapshot.toBoolean
@@ -36,7 +39,7 @@ val nettyVersionInfo = settingKey[String]("A setting reference for printing the 
 val zkVersion = "3.5.6"
 
 val scalaCollectionCompat = "org.scala-lang.modules" %% "scala-collection-compat" % "2.1.2"
-val caffeineLib = "com.github.ben-manes.caffeine" % "caffeine" % "2.8.5"
+val caffeineLib = "com.github.ben-manes.caffeine" % "caffeine" % "2.9.1"
 val hdrHistogramLib = "org.hdrhistogram" % "HdrHistogram" % "2.1.11"
 val jsr305Lib = "com.google.code.findbugs" % "jsr305" % "2.0.1"
 val netty4StaticSsl = "io.netty" % "netty-tcnative-boringssl-static" % netty4StaticSslVersion
@@ -44,7 +47,7 @@ val netty4Libs = Seq(
   "io.netty" % "netty-handler" % netty4Version,
   "io.netty" % "netty-transport" % netty4Version,
   "io.netty" % "netty-transport-native-epoll" % netty4Version classifier "linux-x86_64",
-  "io.netty" % "netty-transport-native-epoll" % netty4Version classifier "linux-aarch64",
+  "io.netty" % "netty-transport-native-epoll" % netty4Version classifier "linux-aarch_64",
   // this package is a dep of native-epoll above, explicitly add this for coursier plugin
   "io.netty" % "netty-transport-native-unix-common" % netty4Version,
   "io.netty" % "netty-handler-proxy" % netty4Version
@@ -53,7 +56,7 @@ val netty4LibsTest = Seq(
   "io.netty" % "netty-handler" % netty4Version % "test",
   "io.netty" % "netty-transport" % netty4Version % "test",
   "io.netty" % "netty-transport-native-epoll" % netty4Version % "test" classifier "linux-x86_64",
-  "io.netty" % "netty-transport-native-epoll" % netty4Version classifier "linux-aarch64",
+  "io.netty" % "netty-transport-native-epoll" % netty4Version % "test" classifier "linux-aarch_64",
   // this package is a dep of native-epoll above, explicitly add this for coursier plugin
   "io.netty" % "netty-transport-native-unix-common" % netty4Version % "test",
   "io.netty" % "netty-handler-proxy" % netty4Version % "test",
@@ -138,14 +141,13 @@ def jdk11GcJavaOptions: Seq[String] = {
 val sharedSettings = Seq(
   version := releaseVersion,
   organization := "com.twitter",
-  scalaVersion := "2.12.11",
-  crossScalaVersions := Seq("2.11.12", "2.12.11", "2.13.1"),
-  fork in Test := true, // We have to fork to get the JavaOptions
+  scalaVersion := "2.13.6",
+  crossScalaVersions := Seq("2.12.12", "2.13.6"),
+  Test / fork := true, // We have to fork to get the JavaOptions
   libraryDependencies ++= Seq(
     // See https://www.scala-sbt.org/0.13/docs/Testing.html#JUnit
     "com.novocode" % "junit-interface" % "0.11" % "test",
-    "org.mockito" % "mockito-all" % "1.9.5" % "test",
-    "org.scalacheck" %% "scalacheck" % "1.14.3" % "test",
+    "org.scalacheck" %% "scalacheck" % "1.15.4" % "test",
     "org.scalatest" %% "scalatest" % "3.1.1" % "test",
     "org.scalatestplus" %% "junit-4-12" % "3.1.2.0" % "test",
     "org.scalatestplus" %% "mockito-1-10" % "3.1.0.0" % "test",
@@ -154,15 +156,15 @@ val sharedSettings = Seq(
   ),
   // Workaround for cross building Dtab.scala, which is not compatible between
   // 2.12- with 2.13+.
-  unmanagedSourceDirectories in Compile += {
-    val sourceDir = (sourceDirectory in Compile).value
+  Compile / unmanagedSourceDirectories += {
+    val sourceDir = (Compile / sourceDirectory).value
     CrossVersion.partialVersion(scalaVersion.value) match {
       case Some((2, n)) if n >= 13 => sourceDir / "scala-2.13+"
       case _ => sourceDir / "scala-2.12-"
     }
   },
   ScoverageKeys.coverageHighlighting := true,
-  ScroogeSBT.autoImport.scroogeLanguages in Test := Seq("java", "scala"),
+  Test / ScroogeSBT.autoImport.scroogeLanguages := Seq("java", "scala"),
   ivyXML :=
     <dependencies>
       <exclude org="com.sun.jmx" module="jmxri" />
@@ -188,7 +190,7 @@ val sharedSettings = Seq(
     "-target",
     "1.8"
   ),
-  javacOptions in doc := Seq("-source", "1.8"),
+  doc / javacOptions := Seq("-source", "1.8"),
   javaOptions ++= Seq(
     "-Djava.net.preferIPv4Stack=true",
     "-DSKIP_SBT=1",
@@ -196,19 +198,19 @@ val sharedSettings = Seq(
     "-server"
   ),
   javaOptions ++= gcJavaOptions,
-  javaOptions in Test ++= travisTestJavaOptions,
+  Test / javaOptions ++= travisTestJavaOptions,
   // This is bad news for things like com.twitter.util.Time
-  parallelExecution in Test := false,
+  Test / parallelExecution := false,
   // -a: print stack traces for failing asserts
   testOptions += Tests.Argument(TestFrameworks.JUnit, "-a"),
   resolvers ++= extraSnapshotResolvers,
   // This effectively disables packageDoc, which craps out
   // on generating docs for generated thrift due to the use
   // of raw java types.
-  // packageDoc in Compile := new java.io.File("nosuchjar"),
+  // Compile / packageDoc := new java.io.File("nosuchjar"),
 
   // Sonatype publishing
-  publishArtifact in Test := false,
+  Test / publishArtifact := false,
   pomIncludeRepository := { _ => false },
   publishMavenStyle := true,
   publishConfiguration := publishConfiguration.value.withOverwrite(true),
@@ -247,8 +249,8 @@ val sharedSettings = Seq(
       "org.apache.thrift" % "libthrift" % libthriftVersion
     )
   }).value,
-  resourceGenerators in Compile += Def.task {
-    val dir = (resourceManaged in Compile).value
+  Compile / resourceGenerators += Def.task {
+    val dir = (Compile / resourceManaged).value
     val file = dir / "com" / "twitter" / name.value / "build.properties"
     val buildRev = scala.sys.process.Process("git" :: "rev-parse" :: "HEAD" :: Nil).!!.trim
     val buildName = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(new java.util.Date)
@@ -270,7 +272,7 @@ val jmockSettings = Seq(
 )
 
 lazy val noPublishSettings = Seq(
-  skip in publish := true
+  publish / skip := true
 )
 
 lazy val projectList = Seq[sbt.ProjectReference](
@@ -285,7 +287,6 @@ lazy val projectList = Seq[sbt.ProjectReference](
   finagleServersets,
   finaglePartitioning,
   finagleTunable,
-  finagleException,
   finagleIntegration,
   finagleExp,
   finagleGrpcContext,
@@ -321,7 +322,7 @@ lazy val finagle = Project(
     sharedSettings ++
       noPublishSettings ++
       Seq(
-        unidocProjectFilter in (ScalaUnidoc, unidoc) :=
+        ScalaUnidoc / unidoc / unidocProjectFilter :=
           inAnyProject -- inProjects(
             finagleBenchmark,
             finagleBenchmarkThrift,
@@ -329,8 +330,8 @@ lazy val finagle = Project(
           ),
         // We don't generate javadoc for finagle-serversets, so exclude it from
         // unidoc.
-        unidocAllSources in (ScalaUnidoc, unidoc) :=
-          (unidocAllSources in (ScalaUnidoc, unidoc)).value.map(_.filterNot { file =>
+        ScalaUnidoc / unidoc / unidocAllSources :=
+          (ScalaUnidoc / unidoc / unidocAllSources).value.map(_.filterNot { file =>
             file.getPath.contains("finagle-serversets") &&
             file.getName.endsWith(".java")
           })
@@ -403,8 +404,7 @@ lazy val finagleCore = Project(
       hdrHistogramLib,
       jsr305Lib
     ) ++ netty4LibsTest,
-    unmanagedClasspath in Test ++= (fullClasspath in (LocalProject(
-      "finagle-netty4"), Compile)).value
+    Test / unmanagedClasspath ++= (LocalProject("finagle-netty4") / Compile / fullClasspath).value
   ).dependsOn(finagleToggle, finagleInit)
 
 lazy val finagleNetty4 = Project(
@@ -486,19 +486,6 @@ lazy val finagleZipkinScribe = Project(
     libraryDependencies ++= scroogeLibs
   ).dependsOn(finagleCore, finagleScribe, finagleThrift, finagleZipkinCore)
 
-lazy val finagleException = Project(
-  id = "finagle-exception",
-  base = file("finagle-exception")
-).settings(
-    sharedSettings
-  ).settings(
-    name := "finagle-exception",
-    libraryDependencies ++= Seq(
-      util("codec")
-    ) ++ scroogeLibs,
-    libraryDependencies ++= jacksonLibs
-  ).dependsOn(finagleCore, finagleThrift)
-
 lazy val finagleServersets = Project(
   id = "finagle-serversets",
   base = file("finagle-serversets")
@@ -520,9 +507,9 @@ lazy val finagleServersets = Project(
     ),
     libraryDependencies ++= jacksonLibs,
     libraryDependencies ++= scroogeLibs,
-    ScroogeSBT.autoImport.scroogeLanguages in Compile := Seq("java"),
-    excludeFilter in unmanagedSources := "ZkTest.scala",
-    scalacOptions in (Compile, doc) ++= {
+    Compile / ScroogeSBT.autoImport.scroogeLanguages := Seq("java"),
+    unmanagedSources / excludeFilter := "ZkTest.scala",
+    Compile / doc / scalacOptions ++= {
       if (scalaVersion.value.startsWith("2.12")) Seq("-no-java-comments")
       else Nil
     }
@@ -732,7 +719,7 @@ lazy val finagleMySQL = Project(
       caffeineLib,
       jsr305Lib
     ) ++ jacksonLibs,
-    excludeFilter in unmanagedSources := {
+    unmanagedSources / excludeFilter := {
       "EmbeddableMysql.scala" || "ClientTest.scala"
     }
   ).dependsOn(finagleCore, finagleNetty4, finagleToggle)
@@ -850,22 +837,22 @@ lazy val finagleDoc = Project(
   ).settings(
     sharedSettings
   ).settings(
-    scalacOptions in doc ++= Seq("-doc-title", "Finagle", "-doc-version", version.value),
-    includeFilter in Sphinx := ("*.html" | "*.png" | "*.svg" | "*.js" | "*.css" | "*.gif" | "*.txt"),
+    doc / scalacOptions ++= Seq("-doc-title", "Finagle", "-doc-version", version.value),
+    Sphinx / includeFilter := ("*.html" | "*.png" | "*.svg" | "*.js" | "*.css" | "*.gif" | "*.txt"),
     // Workaround for sbt bug: Without a testGrouping for all test configs,
     // the wrong tests are run
-    testGrouping := (definedTests in Test map partitionTests).value,
-    testGrouping in DocTest := (definedTests in DocTest map partitionTests).value
+    testGrouping := (Test / definedTests map partitionTests).value,
+    DocTest / testGrouping := (DocTest / definedTests map partitionTests).value
   ).configs(
     DocTest
   ).settings(
     inConfig(DocTest)(Defaults.testSettings): _*
   ).settings(
-    unmanagedSourceDirectories in DocTest += baseDirectory.value / "src/sphinx/code",
-    //resourceDirectory in DocTest <<= baseDirectory { _ / "src/test/resources" }
+    DocTest / unmanagedSourceDirectories += baseDirectory.value / "src/sphinx/code",
+    DocTest / //resourceDirectory <<= baseDirectory { _ / "src/test/resources" }
 
     // Make the "test" command run both, test and doctest:test
-    test := Seq(test in Test, test in DocTest).dependOn.value
+    test := Seq(Test / test, DocTest / test).dependOn.value
   ).dependsOn(finagleCore, finagleHttp, finagleMySQL)
 
 /* Test Configuration for running tests on doc sources */

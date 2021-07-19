@@ -12,10 +12,10 @@ import com.twitter.io.TempFile
 import com.twitter.util.{Await, Future, Try}
 import io.netty.channel.ChannelPipeline
 import java.net.{InetAddress, InetSocketAddress}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
 // duplicated in SmuxTest, please update there too
-class ThriftSmuxTest extends FunSuite {
+class ThriftSmuxTest extends AnyFunSuite {
   import ThriftSmuxTest._
 
   protected def serverImpl(): ThriftMux.Server = ThriftMux.server
@@ -150,7 +150,7 @@ class ThriftSmuxTest extends FunSuite {
             results.get
           }
           assert(string.isEmpty)
-          assert(stats.counters.get(Seq("client", "failures")) == None)
+          assert(stats.counters.get(Seq("client", "failures")) == Some(0))
           assert(stats.counters.get(Seq("client", "service_creation", "failures")) == Some(1))
           assert(
             stats.counters.get(

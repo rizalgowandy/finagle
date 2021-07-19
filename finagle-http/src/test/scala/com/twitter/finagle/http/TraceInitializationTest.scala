@@ -1,17 +1,17 @@
 package com.twitter.finagle.http
 
-import com.twitter.finagle.builder.{ClientBuilder, ServerBuilder}
+import com.twitter.finagle.builder.ClientBuilder
 import com.twitter.finagle.tracing._
 import com.twitter.finagle.Service
 import com.twitter.util.{Await, Closable, Future}
 import java.net.{InetAddress, InetSocketAddress}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
 private object Svc extends Service[Request, Response] {
   def apply(req: Request) = Future.value(req.response)
 }
 
-class TraceInitializationTest extends FunSuite {
+class TraceInitializationTest extends AnyFunSuite {
   def req = RequestBuilder().url("http://foo/this/is/a/uri/path").buildGet()
 
   def assertAnnotationsInOrder(records: Seq[Record], annos: Seq[Annotation]): Unit = {
@@ -72,12 +72,10 @@ class TraceInitializationTest extends FunSuite {
   test("TraceId is propagated through the protocol (builder)") {
     import com.twitter.finagle
     testTraces { (serverTracer, clientTracer) =>
-      val server = ServerBuilder()
-        .name("theServer")
-        .bindTo(new InetSocketAddress(InetAddress.getLoopbackAddress, 0))
-        .stack(finagle.Http.server)
-        .tracer(serverTracer)
-        .build(Svc)
+      val server = finagle.Http.server
+        .withLabel("theServer")
+        .withTracer(serverTracer)
+        .serve(new InetSocketAddress(InetAddress.getLoopbackAddress, 0), Svc)
 
       val port = server.boundAddress.asInstanceOf[InetSocketAddress].getPort
       val client = ClientBuilder()

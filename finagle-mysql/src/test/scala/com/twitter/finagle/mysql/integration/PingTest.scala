@@ -1,14 +1,15 @@
 package com.twitter.finagle.mysql.integration
 
-import com.twitter.util.{Await, Duration}
-import org.scalatest.FunSuite
+import com.twitter.finagle.mysql.harness.EmbeddedSuite
+import com.twitter.finagle.mysql.harness.config.{DatabaseConfig, InstanceConfig}
 
-class PingTest extends FunSuite with IntegrationClient {
+class PingTest extends EmbeddedSuite {
+  val instanceConfig: InstanceConfig = defaultInstanceConfig
+  val databaseConfig: DatabaseConfig = defaultDatabaseConfig
 
-  test("ping default") {
-    val theClient = client.orNull
-    val result = Await.result(theClient.ping(), Duration.fromSeconds(1))
-    // If we get here, result is Unit, and all is good
+  test("ping default") { fixture =>
+    val clnt = fixture.newRichClient()
+    await(clnt.ping())
+    await(clnt.close())
   }
-
 }

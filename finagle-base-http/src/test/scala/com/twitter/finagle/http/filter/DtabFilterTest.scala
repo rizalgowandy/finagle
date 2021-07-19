@@ -5,10 +5,10 @@ import com.twitter.finagle.http.codec.HttpDtab
 import com.twitter.finagle.http.{Request, Response, Status}
 import com.twitter.finagle.{Dtab, Service}
 import com.twitter.util.{Await, Future}
-import org.scalatest.FunSuite
 import org.scalatestplus.junit.AssertionsForJUnit
+import org.scalatest.funsuite.AnyFunSuite
 
-class DtabFilterTest extends FunSuite with AssertionsForJUnit {
+class DtabFilterTest extends AnyFunSuite with AssertionsForJUnit {
 
   private val timeout = 2.seconds
 
@@ -97,6 +97,25 @@ class DtabFilterTest extends FunSuite with AssertionsForJUnit {
       Await.result(svc(req), timeout)
 
       assert(receivedDtab == Some(origDtab))
+    }
+  }
+
+  test("Injector does not transmit dtab.limited") {
+    var receivedDtab: Option[Dtab] = None
+    val svc = new DtabFilter.Injector().andThen(Service.mk[Request, Response] { req =>
+      receivedDtab = HttpDtab.read(req).toOption
+      Future.value(Response())
+    })
+
+    Dtab.unwind {
+      val newDtab = Dtab.read("/s => /srv/smf1")
+      Dtab.limited = newDtab
+
+      // prepare a request and add a correct looking new-style dtab header
+      val req = Request()
+      Await.result(svc(req), timeout)
+
+      assert(receivedDtab == Some(Dtab.empty))
     }
   }
 }

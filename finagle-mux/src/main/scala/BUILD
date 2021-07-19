@@ -6,6 +6,7 @@ scala_library(
         name = "finagle-mux",
         repo = artifactory,
     ),
+    tags = ["bazel-compatible"],
     dependencies = [
         "3rdparty/jvm/io/netty:netty4",
         "3rdparty/jvm/io/netty:netty4-codec",
@@ -21,5 +22,6 @@ scala_library(
     ],
     exports = [
         "3rdparty/jvm/io/netty:netty4",
+        "finagle/finagle-core",
     ],
 )

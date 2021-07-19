@@ -3,20 +3,18 @@ package com.twitter.finagle.mysql
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.stats.{
   Counter,
-  CounterSchema,
   Gauge,
-  GaugeSchema,
-  HistogramSchema,
   InMemoryStatsReceiver,
+  MetricBuilder,
   Stat,
   StatsReceiverProxy
 }
 import com.twitter.util.{Await, Awaitable, Future}
 import java.util.concurrent.atomic.LongAdder
 import org.mockito.Mockito._
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class MetricsTest extends FunSuite {
+class MetricsTest extends AnyFunSuite {
 
   private[this] def await[T](t: Awaitable[T]): T = Await.result(t, 5.seconds)
 
@@ -26,19 +24,19 @@ class MetricsTest extends FunSuite {
     val statCounter = new LongAdder()
     val gaugeCounter = new LongAdder()
 
-    override def counter(schema: CounterSchema): Counter = {
+    override def counter(metricBuilder: MetricBuilder): Counter = {
       counterCounter.increment()
-      super.counter(schema)
+      super.counter(metricBuilder)
     }
 
-    override def stat(schema: HistogramSchema): Stat = {
+    override def stat(metricBuilder: MetricBuilder): Stat = {
       statCounter.increment()
-      super.stat(schema)
+      super.stat(metricBuilder)
     }
 
-    override def addGauge(schema: GaugeSchema)(f: => Float): Gauge = {
+    override def addGauge(metricBuilder: MetricBuilder)(f: => Float): Gauge = {
       gaugeCounter.increment()
-      super.addGauge(schema)(f)
+      super.addGauge(metricBuilder)(f)
     }
   }
 

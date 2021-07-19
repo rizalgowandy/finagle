@@ -1,6 +1,6 @@
 package com.twitter.finagle.param
 
-import com.twitter.finagle.service.StatsFilter
+import com.twitter.finagle.service.{MetricBuilderRegistry, StatsFilter}
 import com.twitter.finagle.util.DefaultTimer
 import com.twitter.finagle.{Stack, stats, tracing, util}
 import com.twitter.util.{JavaTimer, NullMonitor}
@@ -155,18 +155,6 @@ object HighResTimer {
 }
 
 /**
- * A class eligible for configuring a [[java.util.logging.Logger]]
- * used throughout finagle clients and servers.
- */
-case class Logger(log: java.util.logging.Logger) {
-  def mk(): (Logger, Stack.Param[Logger]) =
-    (this, Logger.param)
-}
-object Logger {
-  implicit val param: Stack.Param[Logger] = Stack.Param(Logger(util.DefaultLogger))
-}
-
-/**
  * A class eligible for configuring a
  * [[com.twitter.finagle.stats.StatsReceiver]] throughout finagle
  * clients and servers.
@@ -177,6 +165,22 @@ case class Stats(statsReceiver: stats.StatsReceiver) {
 }
 object Stats {
   implicit val param: Stack.Param[Stats] = Stack.Param(Stats(stats.DefaultStatsReceiver))
+}
+
+/**
+ * A class eligible for configuring a [[com.twitter.finagle.service.MetricBuilderRegistry]]
+ * throughout finagle servers. The MetricBuilderRegistry allows for constructing a set of
+ * essential metrics expressions, [[MetricBuilderRegistry]] is a stateful class and should
+ * be configured per-stack.
+ */
+case class MetricBuilders(registry: Option[MetricBuilderRegistry]) {
+  def mk(): (MetricBuilders, Stack.Param[MetricBuilders]) =
+    (this, MetricBuilders.param)
+}
+
+object MetricBuilders {
+  implicit val param: Stack.Param[MetricBuilders] =
+    Stack.Param(MetricBuilders(None))
 }
 
 /**

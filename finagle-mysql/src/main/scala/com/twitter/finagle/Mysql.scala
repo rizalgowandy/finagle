@@ -12,6 +12,7 @@ import com.twitter.finagle.param.{
   _
 }
 import com.twitter.finagle.service.{ResponseClassifier, RetryBudget}
+import com.twitter.finagle.ssl.OpportunisticTls
 import com.twitter.finagle.stats.{ExceptionStatsHandler, NullStatsReceiver, StatsReceiver}
 import com.twitter.finagle.tracing.Tracer
 import com.twitter.finagle.transport.{Transport, TransportContext}
@@ -38,6 +39,14 @@ trait MysqlRichClient { self: com.twitter.finagle.Client[Request, Result] =>
    * `label`. The `label` is used to scope client stats.
    */
   def newRichClient(dest: Name, label: String): mysql.Client with mysql.Transactions =
+    mysql.Client(newClient(dest, label), richClientStatsReceiver, supportUnsigned)
+
+  /**
+   * Creates a new `RichClient` connected to the logical
+   * destination described by `dest` with the assigned
+   * `label`. The `label` is used to scope client stats.
+   */
+  def newRichClient(dest: String, label: String): mysql.Client with mysql.Transactions =
     mysql.Client(newClient(dest, label), richClientStatsReceiver, supportUnsigned)
 
   /**
@@ -153,6 +162,30 @@ object Mysql extends com.twitter.finagle.Client[Request, Result] with MysqlRichC
       configured(Credentials(Option(u), Option(p)))
 
     /**
+     * Configures the client whether to speak TLS or not.
+     *
+     * By default, don't use opportunistic TLS, and instead always speak TLS
+     * if TLS has been configured.
+     *
+     * The valid levels are Off, which indicates this will never speak TLS,
+     * Desired, which indicates it may speak TLS, but may also not speak TLS,
+     * and Required, which indicates it must speak TLS.
+     *
+     * Clients configured with level `Required` cannot speak to MySQL servers where
+     * TLS is switched off.
+     */
+    def withOpportunisticTls(level: OpportunisticTls.Level): Client =
+      configured(OppTls(Some(level)))
+
+    /**
+     * Disables opportunistic TLS.
+     *
+     * If the client is still TLS configured, it will speak with the server over TLS. To instead
+     * configure this to be `Off`, use `withOpportunisticTls(OpportunisticTls.Off)`.
+     */
+    def withNoOpportunisticTls: Client = configured(OppTls(None))
+
+    /**
      * Database to use when this client establishes a new session.
      */
     def withDatabase(db: String): Client =
@@ -217,6 +250,19 @@ object Mysql extends com.twitter.finagle.Client[Request, Result] with MysqlRichC
      */
     def withConnectionInitRequest(request: Request): Client =
       configured(ConnectionInitRequest(Some(request)))
+
+    /**
+     * To enable the client to use the `caching_sha2_password` authentication method.
+     */
+    def withCachingSha2Password: Client =
+      configured(CachingSha2PasswordAuth(true))
+
+    /**
+     * To configure the local path to the server's RSA public key for encryption
+     * during `caching_sha2_password` authentication.
+     */
+    def withServerRsaPublicKey(path: String): Client =
+      configured(PathToServerRsaPublicKey(path))
 
     // Java-friendly forwarders
     // See https://issues.scala-lang.org/browse/SI-8905

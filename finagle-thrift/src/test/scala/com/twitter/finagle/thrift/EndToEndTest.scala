@@ -2,7 +2,7 @@ package com.twitter.finagle.thrift
 
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.{Address, _}
-import com.twitter.finagle.builder.{ClientBuilder, ServerBuilder}
+import com.twitter.finagle.builder.ClientBuilder
 import com.twitter.finagle.param.Stats
 import com.twitter.finagle.service.{ReqRep, ResponseClass, ResponseClassifier}
 import com.twitter.finagle.ssl.{ClientAuth, KeyCredentials, TrustCredentials}
@@ -12,6 +12,7 @@ import com.twitter.finagle.stats.{
   InMemoryStatsReceiver,
   LoadedStatsReceiver,
   NullStatsReceiver,
+  Server,
   StatsReceiver
 }
 import com.twitter.finagle.thrift.{ClientId => FinagleClientId}
@@ -29,10 +30,11 @@ import java.util.{List => JList}
 import org.apache.thrift.TApplicationException
 import org.apache.thrift.protocol.{TBinaryProtocol, TCompactProtocol, TProtocol, TProtocolFactory}
 import org.apache.thrift.transport.TTransport
-import org.scalatest.{BeforeAndAfter, FunSuite}
+import org.scalatest.BeforeAndAfter
 import scala.reflect.ClassTag
+import org.scalatest.funsuite.AnyFunSuite
 
-class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
+class EndToEndTest extends AnyFunSuite with ThriftTest with BeforeAndAfter {
   var saveBase: Dtab = Dtab.empty
   before {
     saveBase = Dtab.base
@@ -94,11 +96,6 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
       }
     }
 
-    val builder = ServerBuilder()
-      .name("server")
-      .bindTo(new InetSocketAddress(0))
-      .stack(Thrift.server.withProtocolFactory(serverParam.protocolFactory))
-      .build(ifaceToService(iface, serverParam))
     val proto = Thrift.server
       .withProtocolFactory(serverParam.protocolFactory)
       .serveIface(new InetSocketAddress(InetAddress.getLoopbackAddress, 0), iface)
@@ -107,7 +104,6 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
       socketAddr.asInstanceOf[InetSocketAddress].getPort
 
     Seq(
-      ("ServerBuilder", builder, port(builder.boundAddress)),
       ("Proto", proto, port(proto.boundAddress))
     )
   }
@@ -189,6 +185,9 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
     assert(sr.counters(Seq("requests")) == 1)
     assert(sr.counters(Seq("success")) == 0)
     assert(sr.counters(Seq("failures")) == 1)
+
+    assert(sr.expressions("success_rate").labels.role == Server)
+
     server.close()
   }
 
@@ -839,36 +838,6 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
     server.close()
   }
 
-  test("scala thrift ServerBuilder deserialized response classification") {
-    val sr = new InMemoryStatsReceiver()
-
-    val svc = new Echo.FinagledService(
-      iface,
-      RichServerParam(
-        serverStats = sr,
-        responseClassifier = scalaClassifier,
-        perEndpointStats = true
-      )
-    )
-
-    val server = ServerBuilder()
-      .stack(Thrift.server)
-      .responseClassifier(scalaClassifier)
-      .requestTimeout(100.milliseconds)
-      .name("")
-      .reportTo(sr)
-      .bindTo(new InetSocketAddress(0))
-      .build(svc)
-
-    val client = Thrift.client.build[Echo.MethodPerEndpoint](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    testScalaServerResponseClassification(sr, client)
-    server.close()
-  }
-
   test("java thrift ClientBuilder deserialized response classification") {
     val server = serverForClassifier()
     val sr = new InMemoryStatsReceiver()
@@ -883,28 +852,6 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
       new thriftjava.Echo.ServiceToClient(clientBuilder, Protocols.binaryFactory(), javaClassifier)
 
     testJavaClientResponseClassification(sr, client)
-    server.close()
-  }
-
-  test("java thrift ServerBuilder deserialized response classification") {
-    val sr = new InMemoryStatsReceiver()
-    val svc = new thriftjava.Echo.Service(new EchoServiceImpl, RichServerParam())
-
-    val server = ServerBuilder()
-      .stack(Thrift.server)
-      .responseClassifier(javaClassifier)
-      .requestTimeout(100.milliseconds)
-      .name("")
-      .reportTo(sr)
-      .bindTo(new InetSocketAddress(0))
-      .build(svc)
-
-    val client = Thrift.client.build[thriftjava.Echo.ServiceIface](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    testJavaServerResponseClassification(sr, client)
     server.close()
   }
 
@@ -1124,15 +1071,7 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
           Thrift.server
             .withLabel("server")
             .withStatsReceiver(sr)
-            .serve("localhost:*", new Echo.FinagledService(fi, Protocols.binaryFactory()))),
-      "ServerBuilder(stack)" ->
-        ((sr, fi) =>
-          ServerBuilder()
-            .stack(Thrift.server)
-            .name("server")
-            .reportTo(sr)
-            .bindTo(new InetSocketAddress(0))
-            .build(new Echo.FinagledService(fi, Protocols.binaryFactory())))
+            .serve("localhost:*", new Echo.FinagledService(fi, Protocols.binaryFactory())))
     )
 
   private[this] val clients: Seq[(String, (StatsReceiver, Address) => Echo.MethodPerEndpoint)] =
@@ -1255,43 +1194,6 @@ class EndToEndTest extends FunSuite with ThriftTest with BeforeAndAfter {
     override def getProtocol(trans: TTransport): TProtocol = {
       throw new Exception("Evidence to show when Rich[Server|Client]Params are passed through")
     }
-  }
-
-  test("verify using stack API's .with... works to set RichServerParams when using ServerBuilder") {
-    val server = ServerBuilder()
-      .stack(Thrift.server.withProtocolFactory(exceptionProtocol))
-      .name("exception-service")
-      .bindTo(new InetSocketAddress(0))
-      .build(ifaceToService(processor, RichServerParam()))
-
-    val client = Thrift.client.build[B.ServiceIface](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    intercept[Exception] {
-      await(client.show_me_your_dtab())
-    }
-    await(server.close())
-  }
-
-  test(
-    "passing RichServerParams through the service when creating a server with ServerBuilder works") {
-    val server = ServerBuilder()
-      .stack(Thrift.server)
-      .name("exception-service")
-      .bindTo(new InetSocketAddress(0))
-      .build(ifaceToService(processor, RichServerParam(protocolFactory = exceptionProtocol)))
-
-    val client = Thrift.client.build[B.ServiceIface](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    intercept[Exception] {
-      await(client.show_me_your_dtab())
-    }
-    await(server.close())
   }
 
   test("verify using stack API's .with... works to set RichClientParams when using ClientBuilder") {

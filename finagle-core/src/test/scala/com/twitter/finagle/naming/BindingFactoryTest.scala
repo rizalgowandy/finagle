@@ -2,6 +2,9 @@ package com.twitter.finagle.naming
 
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle._
+import com.twitter.finagle.loadbalancer.aperture.{EagerConnections, EagerConnectionsType}
+import com.twitter.finagle.loadbalancer.distributor.AddressedFactory
+import com.twitter.finagle.loadbalancer.{Balancers, EndpointFactory, LoadBalancerFactory}
 import com.twitter.finagle.param.Stats
 import com.twitter.finagle.stack.nilStack
 import com.twitter.finagle.stats._
@@ -11,8 +14,9 @@ import org.mockito.ArgumentCaptor
 import org.mockito.Matchers.any
 import org.mockito.Mockito.{atLeastOnce, spy, verify, when}
 import org.scalatestplus.mockito.MockitoSugar
-import org.scalatest.{BeforeAndAfter, FunSuite}
+import org.scalatest.BeforeAndAfter
 import scala.collection.JavaConverters._
+import org.scalatest.funsuite.AnyFunSuite
 
 object BindingFactoryTest {
   object TestNamer {
@@ -23,7 +27,31 @@ object BindingFactoryTest {
   }
 }
 
-class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter {
+case class Factory(i: Int) extends EndpointFactory[String, String] {
+  def remake(): Unit = {}
+  def address: Address = Address.Failed(new Exception)
+
+  var _total: Int = 0
+  def total: Int = _total
+
+  def apply(conn: ClientConnection): Future[Service[String, String]] = {
+    _total += 1
+
+    Future.value(new Service[String, String] {
+      def apply(unit: String): Future[String] = ???
+      override def close(deadline: Time): Future[Unit] = {
+        Future.Done
+      }
+      override def toString = s"Service($i)"
+    })
+  }
+
+  override def close(deadline: Time): Future[Unit] = {
+    Future.Done
+  }
+}
+
+class BindingFactoryTest extends AnyFunSuite with MockitoSugar with BeforeAndAfter {
   import BindingFactoryTest._
 
   var saveBase: Dtab = Dtab.empty
@@ -182,6 +210,7 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
 
     assert(noBrokers.name == "/foo/bar")
     assert(noBrokers.localDtab == localDtab)
+    assert(noBrokers.limitedDtab == Dtab.empty)
   })
 
   test("Includes path and Dtab.local in NoBrokersAvailableException from service creation") {
@@ -209,6 +238,7 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
 
     assert(noBrokers.name == "/foo/bar")
     assert(noBrokers.localDtab == localDtab)
+    assert(noBrokers.limitedDtab == Dtab.empty)
   }
 
   test("Traces name information per request")(new Ctx {
@@ -368,7 +398,8 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
       }
 
     val params =
-      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) + Stats(stats)
+      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) +
+        Stats(stats)
 
     val factory = new StackBuilder[ServiceFactory[String, String]](nilStack[String, String])
       .push(verifyModule)
@@ -377,11 +408,11 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
 
     val service = await(factory())
     await(service("foo"))
-    assert(stats.schemas(Seq("foo")).metricBuilder.processPath.get == "/$/inet/1")
+    assert(stats.schemas(Seq("foo")).processPath.get == "/$/inet/1")
     assert(stats.counters(Seq("foo")) == 1)
-    assert(stats.schemas(Seq("bar")).metricBuilder.processPath.get == "/$/inet/1")
+    assert(stats.schemas(Seq("bar")).processPath.get == "/$/inet/1")
     assert(stats.stats(Seq("bar")) == Seq(1))
-    assert(stats.schemas(Seq("baz")).metricBuilder.processPath.get == "/$/inet/1")
+    assert(stats.schemas(Seq("baz")).processPath.get == "/$/inet/1")
     assert(stats.gauges(Seq("baz"))() == 0)
   }
 
@@ -411,7 +442,8 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
       }
 
     val params =
-      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) + Stats(stats) + DisplayBoundName(displayFn)
+      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) + Stats(
+        stats) + DisplayBoundName(displayFn)
 
     val factory = new StackBuilder[ServiceFactory[String, String]](nilStack[String, String])
       .push(verifyModule)
@@ -420,11 +452,111 @@ class BindingFactoryTest extends FunSuite with MockitoSugar with BeforeAndAfter 
 
     val service = await(factory())
     await(service("foo"))
-    assert(stats.schemas(Seq("foo")).metricBuilder.processPath.get == "/$/inet/1".reverse)
+    assert(stats.schemas(Seq("foo")).processPath.get == "/$/inet/1".reverse)
     assert(stats.counters(Seq("foo")) == 1)
-    assert(stats.schemas(Seq("bar")).metricBuilder.processPath.get == "/$/inet/1".reverse)
+    assert(stats.schemas(Seq("bar")).processPath.get == "/$/inet/1".reverse)
     assert(stats.stats(Seq("bar")) == Seq(1))
-    assert(stats.schemas(Seq("baz")).metricBuilder.processPath.get == "/$/inet/1".reverse)
+    assert(stats.schemas(Seq("baz")).processPath.get == "/$/inet/1".reverse)
     assert(stats.gauges(Seq("baz"))() == 0)
+  }
+
+  test(
+    "If EagerConnectionsType.ForceWithDtab is set, eager connections are enabled regardless of Dtabs\"") {
+    val endpoint = Factory(0)
+    val endpointEvent = Activity
+      .value(Set(AddressedFactory(endpoint, endpoint.address))).states
+      .asInstanceOf[Event[Activity.State[Set[AddressedFactory[_, _]]]]]
+
+    val unbound = Name.Path(Path.read("/foo"))
+    val baseDtab = () => Dtab.base ++ Dtab.read("/foo=>/$/inet/1")
+    val displayFn = { bound: Name.Bound =>
+      bound.id match {
+        case path: Path => path.show.reverse
+        case _ => fail
+      }
+    }
+    val params =
+      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) +
+        DisplayBoundName(displayFn) + LoadBalancerFactory.Endpoints(
+        endpointEvent) + EagerConnections(EagerConnectionsType.ForceWithDtab) +
+        LoadBalancerFactory.Param(Balancers.aperture())
+
+    val factory: ServiceFactory[String, String] =
+      new StackBuilder[ServiceFactory[String, String]](nilStack[String, String])
+        .push(LoadBalancerFactory.module)
+        .push(BindingFactory.module)
+        .make(params)
+
+    // We should have already made 2 connections due a bound Dtab and having EagerConnections(true)
+    // Because there's no Dtab local, Eager Connections will not be overridden
+    assert(endpoint.total == 2)
+
+    // With the flag set, we should still get an extra connection when a new Dtab local is defined
+    Dtab.unwind {
+      Dtab.local = Dtab.read("/foo=>/$/inet/2")
+      await(factory())
+      assert(endpoint.total == 4)
+    }
+
+    await(factory())
+    assert(endpoint.total == 5)
+
+    // With the flag set, we should still get an extra connection when a new Dtab.limited is defined
+    Dtab.unwind {
+      Dtab.limited = Dtab.read("/foo=>/$/inet/3")
+      await(factory())
+      assert(endpoint.total == 7)
+    }
+
+    await(factory())
+    assert(endpoint.total == 8)
+
+  }
+
+  test(
+    "If EagerConnectionsType.ForceWithDtab is not set, eager connections with dtab locals are disabled") {
+    val endpoint = Factory(0)
+    val endpointEvent = Activity
+      .value(Set(AddressedFactory(endpoint, endpoint.address))).states
+      .asInstanceOf[Event[Activity.State[Set[AddressedFactory[_, _]]]]]
+
+    val unbound = Name.Path(Path.read("/foo"))
+    val baseDtab = () => Dtab.base ++ Dtab.read("/foo=>/$/inet/1")
+    val displayFn = { bound: Name.Bound =>
+      bound.id match {
+        case path: Path => path.show.reverse
+        case _ => fail
+      }
+    }
+    val params =
+      Stack.Params.empty + BindingFactory.Dest(unbound) + BindingFactory.BaseDtab(baseDtab) +
+        DisplayBoundName(displayFn) + LoadBalancerFactory.Endpoints(
+        endpointEvent) + EagerConnections(EagerConnectionsType.Enable) +
+        LoadBalancerFactory.Param(Balancers.aperture())
+
+    val factory: ServiceFactory[String, String] =
+      new StackBuilder[ServiceFactory[String, String]](nilStack[String, String])
+        .push(LoadBalancerFactory.module)
+        .push(BindingFactory.module)
+        .make(params)
+
+    assert(endpoint.total == 2)
+
+    // Without the flag, we should disable eager connections. Apply will only be called when we call factory()
+    Dtab.unwind {
+      Dtab.local = Dtab.read("/foo=>/$/inet/2")
+      await(factory())
+      assert(endpoint.total == 3)
+    }
+
+    await(factory())
+    assert(endpoint.total == 4)
+
+    Dtab.unwind {
+      Dtab.local = Dtab.empty
+      Dtab.limited = Dtab.read("/foo=>/$/inet/3")
+      await(factory())
+      assert(endpoint.total == 5)
+    }
   }
 }

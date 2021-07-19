@@ -7,9 +7,9 @@ import com.twitter.io.Buf
 import com.twitter.util.{Await, Awaitable, Closable, Duration, Future}
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicBoolean
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class ClientNackFilterTest extends FunSuite {
+class ClientNackFilterTest extends AnyFunSuite {
 
   private def await[T](t: Awaitable[T]): T =
     Await.result(t, Duration.fromSeconds(15))
@@ -103,8 +103,10 @@ class ClientNackFilterTest extends FunSuite {
 
       assert(await(client(request)).status == http.Status.Ok)
 
-      // Should have closed the connection on the first nack
-      assert(clientSr.counters(Seq("http", "connects")) == 2)
+      // h2 sessions should remain at 1 and the connection should not sever
+      assert(clientSr.counters(Seq("http", "connects")) == 1)
+      assert(clientSr.gauges(Seq("http", "h2pool-sessions"))() == 1.0f)
+      assert(clientSr.counters(Seq("http", "failures", "rejected")) == 1)
       assert(serverSr.counters(Seq("myservice", "nacks")) == 1)
 
       closeCtx()

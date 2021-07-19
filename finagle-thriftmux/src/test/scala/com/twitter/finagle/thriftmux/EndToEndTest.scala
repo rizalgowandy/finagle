@@ -3,10 +3,11 @@ package com.twitter.finagle.thriftmux
 import com.twitter.conversions.DurationOps._
 import com.twitter.finagle.Stack.Transformer
 import com.twitter.finagle._
-import com.twitter.finagle.builder.{ClientBuilder, ServerBuilder}
+import com.twitter.finagle.builder.ClientBuilder
 import com.twitter.finagle.client.StackClient
 import com.twitter.finagle.context.Contexts
 import com.twitter.finagle.dispatch.PipeliningDispatcher
+import com.twitter.finagle.liveness.FailureAccrualFactory
 import com.twitter.finagle.param.{Label, Stats, Tracer => PTracer}
 import com.twitter.finagle.service._
 import com.twitter.finagle.stats._
@@ -33,12 +34,13 @@ import org.apache.thrift.TApplicationException
 import org.apache.thrift.protocol._
 import org.scalactic.source.Position
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
-import org.scalatest.{FunSuite, Tag}
+import org.scalatest.Tag
 import org.scalatestplus.junit.AssertionsForJUnit
 import scala.language.reflectiveCalls
+import org.scalatest.funsuite.AnyFunSuite
 
 class EndToEndTest
-    extends FunSuite
+    extends AnyFunSuite
     with AssertionsForJUnit
     with Eventually
     with IntegrationPatience {
@@ -209,11 +211,6 @@ class EndToEndTest
       }
 
       val pfSvc = new TestService$FinagleService(iface, pf)
-      val builder = ServerBuilder()
-        .stack(serverImpl.withProtocolFactory(pf))
-        .name("ThriftMuxServer")
-        .bindTo(new InetSocketAddress(0))
-        .build(pfSvc)
       val netty4 = serverImpl
         .withProtocolFactory(pf)
         .serveIface(new InetSocketAddress(InetAddress.getLoopbackAddress, 0), iface)
@@ -222,7 +219,6 @@ class EndToEndTest
         socketAddr.asInstanceOf[InetSocketAddress].getPort
 
       Seq(
-        ("ServerBuilder", builder, port(builder.boundAddress)),
         ("ThriftMux", netty4, port(netty4.boundAddress))
       )
     }
@@ -296,6 +292,103 @@ class EndToEndTest
     assert(thrown.getMessage == "Internal error processing query: 'java.lang.Exception: sad panda'")
 
     await(server.close())
+  }
+
+  test(
+    "thriftmux server + thriftmux client: " +
+      "if the server throws an exception, the client should treat it as a failure"
+  ) {
+    val serverSR = new InMemoryStatsReceiver()
+    val server = serverImpl
+      .withStatsReceiver(serverSR)
+      .withLabel("aserver")
+      .serveIface(
+        new InetSocketAddress(InetAddress.getLoopbackAddress, 0),
+        new TestService.MethodPerEndpoint {
+          def query(x: String): Future[String] = throw new Exception("sad panda")
+          def question(y: String): Future[String] = ???
+          def inquiry(z: String): Future[String] = ???
+        }
+      )
+
+    try {
+      val clientSR = new InMemoryStatsReceiver()
+      val markDeadForMs = 60000
+      val dest = Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress]))
+
+      val clientBase = ThriftMux.client
+        .withStatsReceiver(clientSR)
+        .withResponseClassifier(ThriftMuxResponseClassifier.ThriftExceptionsAsFailures)
+        .configured(
+          FailureAccrualFactory
+            .Param(numFailures = 1, markDeadFor = Duration.fromMilliseconds(markDeadForMs))
+        )
+
+      val methodBuilderLabel = "methodBuilder"
+      val methodBuilderClient = TestService.MethodPerEndpoint(
+        clientBase
+          .withLabel(methodBuilderLabel)
+          .methodBuilder(dest)
+          .servicePerEndpoint[TestService.ServicePerEndpoint]
+      )
+      testUndeclaredServerException(
+        methodBuilderClient,
+        methodBuilderLabel,
+        clientSR,
+        markDeadForMs,
+        assertLogicalStats = true,
+      )
+
+      assert(serverSR.counter("aserver", "failures")() == 1)
+      assert(serverSR.counter("aserver", "failures", "java.lang.Exception")() == 1)
+      assert(serverSR.counter("aserver", "success")() == 0)
+
+      clientSR.clear()
+
+      val methodPerEndpointLabel = "MethodPerEndpoint"
+      val methodPerEndpointClient = clientBase.build[thriftscala.TestService.MethodPerEndpoint](
+        dest,
+        methodPerEndpointLabel,
+      )
+      testUndeclaredServerException(
+        methodPerEndpointClient,
+        methodPerEndpointLabel,
+        clientSR,
+        markDeadForMs,
+        assertLogicalStats = false,
+      )
+
+    } finally {
+      server.close()
+    }
+  }
+
+  private[this] def testUndeclaredServerException(
+    client: TestService.MethodPerEndpoint,
+    label: String,
+    clientSR: InMemoryStatsReceiver,
+    markDeadForMs: Int,
+    assertLogicalStats: Boolean,
+  ): Unit = {
+    val thrown = intercept[TApplicationException] {
+      await(client.query("ok"))
+    }
+
+    assert(thrown.getMessage == "Internal error processing query: 'java.lang.Exception: sad panda'")
+
+    eventually {
+      if (assertLogicalStats) {
+        assert(clientSR.counter(label, "logical", "failures")() == 1, label)
+        assert(clientSR.counter(label, "logical", "success")() == 0, label)
+      }
+      assert(clientSR.counter(label, "failures")() == 1, label)
+      assert(clientSR.counter(label, "success")() == 0, label)
+      assert(clientSR.counter(label, "failure_accrual", "removals")() == 1, label)
+      assert(
+        clientSR.counter(label, "failure_accrual", "removed_for_ms")() == markDeadForMs,
+        label,
+      )
+    }
   }
 
   test("thriftmux server + Finagle thrift client: traceId should be passed from client to server") {
@@ -1299,36 +1392,6 @@ class EndToEndTest
     server.close()
   }
 
-  test("scala thriftmux ServerBuilder deserialized response classification") {
-    val sr = new InMemoryStatsReceiver()
-
-    val svc = new TestService.FinagledService(
-      iface,
-      RichServerParam(
-        serverStats = sr,
-        responseClassifier = scalaClassifier,
-        perEndpointStats = true
-      )
-    )
-
-    val server = ServerBuilder()
-      .stack(ThriftMux.server)
-      .responseClassifier(scalaClassifier)
-      .requestTimeout(100.milliseconds)
-      .name("thrift")
-      .reportTo(sr)
-      .bindTo(new InetSocketAddress(0))
-      .build(svc)
-
-    val client = ThriftMux.client.build[TestService.MethodPerEndpoint](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    testScalaServerResponseClassification(sr, client)
-    server.close()
-  }
-
   test("java thriftmux ClientBuilder deserialized response classification") {
     val server = serverForClassifier()
     val sr = new InMemoryStatsReceiver()
@@ -1346,28 +1409,6 @@ class EndToEndTest
     )
 
     testJavaClientFailureClassification(sr, client)
-    server.close()
-  }
-
-  test("java thriftmux ServerBuilder deserialized response classification") {
-    val sr = new InMemoryStatsReceiver()
-    val svc = new thriftjava.TestService.Service(new TestServiceImpl, RichServerParam())
-
-    val server = ServerBuilder()
-      .stack(ThriftMux.server)
-      .responseClassifier(javaClassifier)
-      .requestTimeout(100.milliseconds)
-      .name("thrift")
-      .reportTo(sr)
-      .bindTo(new InetSocketAddress(0))
-      .build(svc)
-
-    val client = ThriftMux.client.build[thriftjava.TestService.ServiceIface](
-      Name.bound(Address(server.boundAddress.asInstanceOf[InetSocketAddress])),
-      "client"
-    )
-
-    testJavaServerFailureClassification(sr, client)
     server.close()
   }
 

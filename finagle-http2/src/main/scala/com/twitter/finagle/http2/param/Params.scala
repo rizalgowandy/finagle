@@ -72,6 +72,20 @@ object InitialWindowSize {
 }
 
 /**
+ * A class for configuring overrides to the default `encoderEnforceMaxConcurrentStreams` setting. If
+ * enabled the encoder will queue frames if the maximum number of concurrent streams would otherwise
+ * be exceeded.
+ */
+final case class EnforceMaxConcurrentStreams(enabled: Boolean) {
+  def mk(): (EnforceMaxConcurrentStreams, Stack.Param[EnforceMaxConcurrentStreams]) =
+    (this, EnforceMaxConcurrentStreams.param)
+}
+
+object EnforceMaxConcurrentStreams {
+  implicit val param = Stack.Param(EnforceMaxConcurrentStreams(enabled = false))
+}
+
+/**
  * A class for configuring overrides to the default maxFrameSize setting.
  */
 case class MaxFrameSize(maxFrameSize: Option[StorageUnit]) {
@@ -188,4 +202,33 @@ object FrameLoggerNamePrefix {
   private[this] val DefaultFrameLoggerPrefix: String = classOf[Http2MultiplexHandler].getName()
 
   implicit val param = Stack.Param(FrameLoggerNamePrefix(DefaultFrameLoggerPrefix))
+}
+
+/**
+ * Whether or not [[com.twitter.finagle.http2.transport.common.Http2NackHandler]]
+ * is included in channel pipeline, which is responsible for converting NACKs
+ * to RST_STREAM frame.
+ *
+ * Defaults to enabled.
+ *
+ * @see `Enabled` and `Disabled` on companion class for getting instances.
+ */
+final case class NackRstFrameHandling private (enabled: Boolean) {
+  def mk(): (NackRstFrameHandling, Stack.Param[NackRstFrameHandling]) =
+    (this, NackRstFrameHandling.param)
+}
+
+object NackRstFrameHandling {
+
+  /**
+   * Http2NackHandler is disabled.
+   */
+  val Disabled: NackRstFrameHandling = NackRstFrameHandling(false)
+
+  /**
+   * Http2NackHandler is enabled.
+   */
+  val Enabled: NackRstFrameHandling = NackRstFrameHandling(true)
+
+  implicit val param: Stack.Param[NackRstFrameHandling] = Stack.Param(Enabled)
 }

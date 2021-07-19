@@ -1,15 +1,8 @@
 package com.twitter.finagle.ssl
 
-import com.twitter.finagle.Stack
 import com.twitter.io.Buf
 
 object OpportunisticTls {
-
-  case class Param(level: Level)
-
-  object Param {
-    implicit val param = Stack.Param(Param(Off))
-  }
 
   /**
    * Configures the level of TLS that the client or server can support or must
@@ -42,4 +35,7 @@ object OpportunisticTls {
    * Compatible with "desired", or "required".
    */
   case object Required extends Level("required")
+
+  /** The sequence of [[Level]]s from least to most secure */
+  final val Values: Seq[Level] = Seq(Off, Desired, Required)
 }

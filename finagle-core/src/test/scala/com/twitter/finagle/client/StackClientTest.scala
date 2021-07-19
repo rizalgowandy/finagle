@@ -23,8 +23,9 @@ import com.twitter.util.registry.{Entry, GlobalRegistry, SimpleRegistry}
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
-import org.scalatest.{BeforeAndAfter, FunSuite}
+import org.scalatest.BeforeAndAfter
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
+import org.scalatest.funsuite.AnyFunSuite
 
 private object StackClientTest {
   case class LocalCheckingStringClient(
@@ -75,7 +76,7 @@ class PushStackClientTest extends AbstractStackClientTest {
 }
 
 abstract class AbstractStackClientTest
-    extends FunSuite
+    extends AnyFunSuite
     with BeforeAndAfter
     with Eventually
     with IntegrationPatience {
@@ -766,7 +767,10 @@ abstract class AbstractStackClientTest
       val role = Stack.Role("verify")
       val description = "Verifies the value of the test param"
 
-      def make(testParam: TestParam, next: ServiceFactory[String, String]): ServiceFactory[String, String] = {
+      def make(
+        testParam: TestParam,
+        next: ServiceFactory[String, String]
+      ): ServiceFactory[String, String] = {
         testParamValue = testParam.p1
         new SimpleFilter[String, String] {
           def apply(request: String, service: Service[String, String]): Future[String] = {
@@ -785,5 +789,35 @@ abstract class AbstractStackClientTest
     await(svc("hello"))
 
     assert(testParamValue == 37)
+  }
+
+  test("DefaultTransformers") {
+    val exc = new Exception("DefaultTransformer.boom!")
+    val defaultElem = new StackTransformer {
+      def name = "prepend-nop-module"
+      def apply[Req, Rep](stack: Stack[ServiceFactory[Req, Rep]]): Stack[ServiceFactory[Req, Rep]] =
+        stack.prepend(new Stack.Module0[ServiceFactory[Req, Rep]] {
+          def role = Stack.Role("defaulttransformers-module")
+          def description = "a stack module added via global DefaultTransformers"
+          def make(next: ServiceFactory[Req, Rep]): ServiceFactory[Req, Rep] = {
+            val filter = new SimpleFilter[Req, Rep] {
+              def apply(req: Req, svc: Service[Req, Rep]): Future[Rep] = {
+                Future.exception(exc)
+              }
+            }
+            filter.andThen(next)
+          }
+        })
+    }
+    try {
+      StackClient.DefaultTransformer.append(defaultElem)
+      val listeningServer = StringServer.server
+        .serve(":*", Service.mk[String, String](Future.value))
+      val boundAddress = listeningServer.boundAddress.asInstanceOf[InetSocketAddress]
+      val svc = baseClient.newService(Name.bound(Address(boundAddress)), "stringClient")
+      assert(exc == (intercept[Exception] { await(svc("hello")) }))
+    } finally {
+      StackClient.DefaultTransformer.clear()
+    }
   }
 }

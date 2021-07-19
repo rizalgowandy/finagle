@@ -1,8 +1,8 @@
 package com.twitter.finagle
 
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class StackTest extends FunSuite {
+class StackTest extends AnyFunSuite {
   val testRole1 = Stack.Role("TestRole1")
   val testRole2 = Stack.Role("TestRole2")
   val testRole3 = Stack.Role("TestRole3")
@@ -228,5 +228,15 @@ class StackTest extends FunSuite {
 
   test("Role.toString: should return lowercase object name") {
     assert(testRole1.toString == "testrole1")
+  }
+
+  test("StackTransformerCollection") {
+    val ts = new StackTransformerCollection {}
+    ts.append(new StackTransformer {
+      def name: String = "test"
+      def apply[Req, Rep](stack: Stack[ServiceFactory[Req, Rep]]): Stack[ServiceFactory[Req, Rep]] =
+        stack
+    })
+    assert(ts.transformers.size == 1)
   }
 }

@@ -1,13 +1,13 @@
 package com.twitter.finagle.mysql
 
-import com.twitter.finagle.{Stack, Status}
 import com.twitter.finagle.ssl.client.SslClientConfiguration
 import com.twitter.finagle.transport.Transport
+import com.twitter.finagle.{Stack, Status}
 import com.twitter.util.{Await, Duration}
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, SocketAddress}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class MysqlTransporterTest extends FunSuite {
+class MysqlTransporterTest extends AnyFunSuite {
 
   // This is an example MySQL server response in bytes
   val initialBodyLength: Byte = 74
@@ -41,11 +41,11 @@ class MysqlTransporterTest extends FunSuite {
       outStream.write(handshakeResponseResult)
       outStream.flush()
 
-      val transport = Await.result(transportFut, Duration.fromSeconds(2))
+      val transport = Await.result(transportFut, Duration.fromSeconds(5))
       try {
         assert(transport.status == Status.Open)
 
-        val result = Await.result(transport.close(), Duration.fromSeconds(2))
+        val result = Await.result(transport.close(), Duration.fromSeconds(5))
       } finally {
         transport.close()
       }

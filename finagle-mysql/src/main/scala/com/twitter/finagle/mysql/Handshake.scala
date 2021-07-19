@@ -3,6 +3,8 @@ package com.twitter.finagle.mysql
 import com.twitter.finagle.mysql.transport.{MysqlBuf, Packet}
 import com.twitter.finagle.transport.Transport
 import com.twitter.finagle.Stack
+import com.twitter.finagle.param.Stats
+import com.twitter.finagle.stats.{Counter, Verbosity}
 import com.twitter.util.{Future, Return, Throw, Try}
 
 /**
@@ -48,6 +50,11 @@ private[mysql] abstract class Handshake(
 
   protected final val settings = HandshakeSettings(params)
 
+  // To test that fastAuthSuccess has been achieved when
+  // connecting to mysql with a user that has a password
+  protected val fastAuthSuccessCounter: Counter =
+    params[Stats].statsReceiver.counter(Verbosity.Debug, "fast_auth_success")
+
   private[this] def isCompatibleVersion(init: HandshakeInit): Try[Boolean] =
     if (init.serverCapabilities.has(Capability.Protocol41)) Return.True
     else Throw(IncompatibleVersion)
@@ -61,9 +68,6 @@ private[mysql] abstract class Handshake(
       LostSyncException.const(isCompatibleCharset(handshakeInit)).map(_ => handshakeInit)
     }
 
-  protected final def messageDispatch(msg: ProtocolMessage): Future[Result] =
-    transport.write(msg.toPacket).flatMap(_ => transport.read().flatMap(decodeSimpleResult))
-
   protected final def decodeSimpleResult(packet: Packet): Future[Result] =
     MysqlBuf.peek(packet.body) match {
       case Some(Packet.OkByte) => LostSyncException.const(OK(packet))
@@ -71,6 +75,11 @@ private[mysql] abstract class Handshake(
         LostSyncException.const(Error(packet)).flatMap { err =>
           Future.exception(ServerError(err.code, err.sqlState, err.message))
         }
+      // During the handshake this is the AuthSwitchRequest
+      case Some(Packet.EofByte) =>
+        LostSyncException.const(AuthSwitchRequest(packet))
+      case Some(Packet.AuthMoreDataByte) =>
+        LostSyncException.const(AuthMoreDataFromServer(packet))
       case _ => LostSyncException.AsFuture
     }
 
@@ -95,11 +104,13 @@ private[mysql] object Handshake {
   /**
    * Creates a `Handshake` based on the specific `Stack` params and `Transport` passed in.
    * If the `Transport.ClientSsl` param is set, then a `SecureHandshake` will be returned.
-   * Otherwise a `PlainHandshake is returned.
+   * Otherwise a `PlainHandshake` is returned.
    */
   def apply(params: Stack.Params, transport: Transport[Packet, Packet]): Handshake =
-    if (params[Transport.ClientSsl].sslClientConfiguration.isDefined)
+    if (params[Transport.ClientSsl].sslClientConfiguration.isDefined) {
       new SecureHandshake(params, transport)
-    else new PlainHandshake(params, transport)
+    } else {
+      new PlainHandshake(params, transport)
+    }
 
 }

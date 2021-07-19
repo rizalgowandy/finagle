@@ -7,6 +7,7 @@ import com.twitter.finagle.http._
 import com.twitter.finagle.http.codec.HttpServerDispatcher
 import com.twitter.finagle.http.exp.StreamTransport
 import com.twitter.finagle.http.filter._
+import com.twitter.finagle.http.param.{ClientKerberosConfiguration, ServerKerberosConfiguration}
 import com.twitter.finagle.http.service.HttpResponseClassifier
 import com.twitter.finagle.http2.Http2Listener
 import com.twitter.finagle.netty4.http.{Netty4HttpListener, Netty4ServerStreamTransport}
@@ -14,7 +15,6 @@ import com.twitter.finagle.server._
 import com.twitter.finagle.service.{ResponseClassifier, RetryBudget}
 import com.twitter.finagle.ssl.ApplicationProtocols
 import com.twitter.finagle.stats.{ExceptionStatsHandler, StatsReceiver}
-import com.twitter.finagle.toggle.Toggle
 import com.twitter.finagle.tracing._
 import com.twitter.finagle.transport.{Transport, TransportContext}
 import com.twitter.util.{Duration, Future, FuturePool, Monitor, StorageUnit}
@@ -42,20 +42,6 @@ trait HttpRichClient { self: Client[Request, Response] =>
  * HTTP/1.1 protocol support, including client and server.
  */
 object Http extends Client[Request, Response] with HttpRichClient with Server[Request, Response] {
-
-  // Toggles transport implementation to Http/2.
-  private[this] object useH2 {
-    private[this] val underlying: Toggle = Toggles("com.twitter.finagle.http.UseH2")
-    def apply(): Boolean = underlying(ServerInfo().id.hashCode)
-  }
-  object useH2CClients {
-    private[twitter] val underlying: Toggle = Toggles("com.twitter.finagle.http.UseH2CClients2")
-    def apply(): Boolean = underlying(ServerInfo().id.hashCode)
-  }
-  private[this] object useH2CServers {
-    private[this] val underlying: Toggle = Toggles("com.twitter.finagle.http.UseH2CServers")
-    def apply(): Boolean = underlying(ServerInfo().id.hashCode)
-  }
 
   /**
    * configure alternative http 1.1 implementations
@@ -160,6 +146,7 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
           new Stack.NoOpModule(http.filter.StatsFilter.role, http.filter.StatsFilter.description)
         )
         .insertAfter(http.filter.StatsFilter.role, StreamingStatsFilter.module)
+        .prepend(KerberosAuthenticationFilter.clientModule)
 
     private def params: Stack.Params =
       StackClient.defaultParams +
@@ -277,6 +264,12 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
       configured(HttpImpl.Netty4Impl)
 
     /**
+     * Enable kerberos client authentication for http requests
+     */
+    def withKerberos(clientKerberosConfiguration: ClientKerberosConfiguration): Client = configured(
+      http.param.ClientKerberos(clientKerberosConfiguration))
+
+    /**
      * Create a [[http.MethodBuilder]] for a given destination.
      *
      * @see [[https://twitter.github.io/finagle/guide/MethodBuilder.html user guide]]
@@ -343,13 +336,14 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
       super.newClient(dest, label0)
     }
     override def newClient(dest: Name, label0: String): ServiceFactory[Request, Response] = {
-      val shouldHttp2 =
-        if (params[Transport.ClientSsl].sslClientConfiguration == None) useH2CClients()
-        else useH2()
-      val explicitlyConfigured = params.contains[HttpImpl]
       val client =
-        if (!explicitlyConfigured && shouldHttp2) this.configuredParams(Http2)
-        else this
+        if (params.contains[HttpImpl]) this
+        else
+          defaultClientProtocol() match {
+            case Protocol.HTTP_2 => withHttp2
+            case Protocol.HTTP_1_1 => withNoHttp2
+          }
+
       client.superNewClient(dest, label0)
     }
 
@@ -381,6 +375,7 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
         .prepend(
           new Stack.NoOpModule(http.filter.StatsFilter.role, http.filter.StatsFilter.description)
         )
+        .prepend(KerberosAuthenticationFilter.serverModule)
         .insertAfter(http.filter.StatsFilter.role, StreamingStatsFilter.module)
         // the backup request module adds tracing annotations and as such must come
         // after trace initialization and deserialization of contexts.
@@ -389,7 +384,7 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
           ServerContextFilter.role,
           BackupRequest.traceAnnotationModule[Request, Response])
 
-    private val params: Stack.Params = StackServer.defaultParams +
+    private def params: Stack.Params = StackServer.defaultParams +
       protocolLibrary +
       responseClassifierParam
   }
@@ -523,6 +518,12 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
       configured(HttpImpl.Netty4Impl)
 
     /**
+     * Enable kerberos server authentication for http requests
+     */
+    def withKerberos(serverKerberosConfiguration: ServerKerberosConfiguration): Server = configured(
+      http.param.ServerKerberos(serverKerberosConfiguration))
+
+    /**
      * By default finagle-http automatically sends 100-CONTINUE responses to inbound
      * requests which set the 'Expect: 100-Continue' header. Streaming servers will
      * always return 100-CONTINUE. Non-streaming servers will compare the
@@ -587,13 +588,14 @@ object Http extends Client[Request, Response] with HttpRichClient with Server[Re
       addr: SocketAddress,
       factory: ServiceFactory[Request, Response]
     ): ListeningServer = {
-      val shouldHttp2 =
-        if (params[Transport.ServerSsl].sslServerConfiguration == None) useH2CServers()
-        else useH2()
-      val explicitlyConfigured = params.contains[HttpImpl]
       val server =
-        if (!explicitlyConfigured && shouldHttp2) this.configuredParams(Http2)
-        else this
+        if (params.contains[HttpImpl]) this
+        else
+          defaultServerProtocol() match {
+            case Protocol.HTTP_2 => withHttp2
+            case Protocol.HTTP_1_1 => withNoHttp2
+          }
+
       server.superServe(addr, factory)
     }
   }

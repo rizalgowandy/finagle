@@ -1,6 +1,7 @@
 junit_tests(
     sources = ["**/*.scala"],
     compiler_option_sets = ["fatal_warnings"],
+    tags = ["bazel-compatible"],
     dependencies = [
         "3rdparty/jvm/junit",
         "3rdparty/jvm/org/mockito:mockito-all",
@@ -15,7 +16,7 @@ junit_tests(
         "finagle/finagle-memcached/src/main/scala",
         "finagle/finagle-mux/src/main/scala",
         "finagle/finagle-mysql/src/main/scala",
-        "finagle/finagle-mysql/src/test/scala:integration-client",
+        "finagle/finagle-mysql/src/test/scala/com/twitter/finagle/mysql/harness",
         "finagle/finagle-netty4-http",
         "finagle/finagle-redis",
         "finagle/finagle-thrift",

@@ -7,7 +7,7 @@ import com.twitter.io.{Buf, Writer, Reader}
 import com.twitter.util._
 import io.netty.handler.codec.http.{HttpMessage, HttpRequest}
 import java.net.{Socket, InetAddress, InetSocketAddress}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
 private object Http2ListenerTest {
   def await[A](f: Future[A], to: Duration = 5.seconds) = Await.result(f, to)
@@ -50,7 +50,7 @@ private object Http2ListenerTest {
   }
 }
 
-class Http2ListenerTest extends FunSuite {
+class Http2ListenerTest extends AnyFunSuite {
   import Http2ListenerTest._
 
   test("Http2Listener should upgrade neatly")(new Ctx {
@@ -75,7 +75,7 @@ class Http2ListenerTest extends FunSuite {
     await(close())
   })
 
-  test("Http2Listener should not upgrade with an invalid URI")(new Ctx {
+  test("Http2Listener should not upgrade with an invalid URI (non-ASCII)")(new Ctx {
 
     await(write(s"""GET http:///DSC02175拷貝.jpg HTTP/1.1
                   |x-http2-stream-id: 1
@@ -86,6 +86,27 @@ class Http2ListenerTest extends FunSuite {
                   |x-hello: world
                   |
                   |""".stripMargin.replaceAll("\n", "\r\n")))
+
+    assert(await(read()).get == """HTTP/1.0 400 Bad Request
+                                  |Connection: close
+                                  |Content-Length: 0
+                                  |
+                                  |""".stripMargin.replaceAll("\n", "\r\n"))
+
+    await(close())
+  })
+
+  test("Http2Listener should not upgrade with an invalid URI (encoding)")(new Ctx {
+
+    await(write(s"""GET http:///1%%.jpg HTTP/1.1
+                   |x-http2-stream-id: 1
+                   |upgrade: h2c
+                   |HTTP2-Settings: AAEAABAAAAIAAAABAAN_____AAQAAP__AAUAAEAAAAZ_____
+                   |connection: HTTP2-Settings,upgrade
+                   |content-length: 0
+                   |x-hello: world
+                   |
+                   |""".stripMargin.replaceAll("\n", "\r\n")))
 
     assert(await(read()).get == """HTTP/1.0 400 Bad Request
                                   |Connection: close

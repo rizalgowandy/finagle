@@ -8,6 +8,12 @@ import com.twitter.finagle.context.{Contexts, Deadline}
 import com.twitter.finagle.filter.RequestSemaphoreFilter
 import com.twitter.finagle.param.{Stats, Timer}
 import com.twitter.finagle.server.utils.StringServer
+import com.twitter.finagle.service.MetricBuilderRegistry.ExpressionNames.{
+  deadlineRejectName,
+  latencyName,
+  successRateName,
+  throughputName
+}
 import com.twitter.finagle.service.{ExpiringService, TimeoutFilter}
 import com.twitter.finagle.ssl.session.{NullSslSessionInfo, SslSessionInfo}
 import com.twitter.finagle.stack.Endpoint
@@ -15,10 +21,10 @@ import com.twitter.finagle.stats.InMemoryStatsReceiver
 import com.twitter.finagle.util.StackRegistry
 import com.twitter.util.{Await, Duration, Future, MockTimer, Promise, Time}
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}
-import org.scalatest.FunSuite
 import org.scalatest.concurrent.Eventually
+import org.scalatest.funsuite.AnyFunSuite
 
-class StackServerTest extends FunSuite with Eventually {
+class StackServerTest extends AnyFunSuite with Eventually {
 
   test("withStack (Function1)") {
     val module = new Module0[ServiceFactory[String, String]] {
@@ -242,5 +248,21 @@ class StackServerTest extends FunSuite with Eventually {
     assert(didRun)
 
     Await.ready(server.close(), 10.seconds)
+  }
+
+  test("StackServer has MetricBuilderRegistry configured instruments default expressions") {
+    val sf = ServiceFactory.const(Service.mk[String, String](_ => Future.value("hi")))
+    val stack = StackServer.newStack[String, String] ++ Stack.leaf(Endpoint, sf)
+
+    val sr = new InMemoryStatsReceiver
+    val svc = Await.result(stack.make(StackServer.defaultParams + Stats(sr))(), 5.seconds)
+    Await.result(svc("foo"), 5.seconds)
+
+    // ACRejectedCounter is not configured in the default stack
+    // We won't create acRejectName which uses that metric
+    assert(sr.expressions.contains(successRateName))
+    assert(sr.expressions.contains(throughputName))
+    assert(sr.expressions.contains(latencyName))
+    assert(sr.expressions.contains(deadlineRejectName))
   }
 }

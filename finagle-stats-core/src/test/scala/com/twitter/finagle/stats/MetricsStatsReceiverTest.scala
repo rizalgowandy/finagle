@@ -1,6 +1,8 @@
 package com.twitter.finagle.stats
 
-import org.scalatest.FunSuite
+import com.twitter.finagle.stats.MetricBuilder.{CounterType, GaugeType, HistogramType}
+import com.twitter.finagle.stats.exp.{Expression, ExpressionSchema, ExpressionSchemaKey}
+import org.scalatest.funsuite.AnyFunSuite
 
 object MetricsStatsReceiverTest {
   trait TestCtx {
@@ -64,7 +66,7 @@ object MetricsStatsReceiverTest {
       verbosity: Verbosity = Verbosity.Default
     ) =
       statsReceiver.counter(
-        CounterSchema(statsReceiver.metricBuilder().withName(name).withVerbosity(verbosity)))
+        statsReceiver.metricBuilder(CounterType).withName(name: _*).withVerbosity(verbosity))
     def addGauge(
       statsReceiver: StatsReceiver,
       name: Seq[String],
@@ -73,18 +75,18 @@ object MetricsStatsReceiverTest {
       f: => Float
     ) =
       statsReceiver.addGauge(
-        GaugeSchema(statsReceiver.metricBuilder().withName(name).withVerbosity(verbosity)))(f)
+        statsReceiver.metricBuilder(GaugeType).withName(name: _*).withVerbosity(verbosity))(f)
     def addHisto(
       statsReceiver: StatsReceiver,
       name: Seq[String],
       verbosity: Verbosity = Verbosity.Default
     ) =
       statsReceiver.stat(
-        HistogramSchema(statsReceiver.metricBuilder().withName(name).withVerbosity(verbosity)))
+        statsReceiver.metricBuilder(HistogramType).withName(name: _*).withVerbosity(verbosity))
   }
 }
 
-class MetricsStatsReceiverTest extends FunSuite {
+class MetricsStatsReceiverTest extends AnyFunSuite {
   import MetricsStatsReceiverTest._
 
   test("toString") {
@@ -245,9 +247,89 @@ class MetricsStatsReceiverTest extends FunSuite {
       assert(metrics2.schemas.containsKey("ccc"))
     }
 
+    test("StatsReceiver metrics expose the underlying schema" + suffix) {
+      val metrics = new Metrics()
+
+      val sr = new MetricsStatsReceiver(metrics)
+      val counter = addCounter(sr, Seq("aaa"))
+      assert(metrics.schemas.get("aaa") == counter.metadata)
+
+      val gauge = addGauge(sr, Seq("bbb"))(1f)
+      assert(metrics.schemas.get("bbb") == gauge.metadata)
+
+      val histo = addHisto(sr, Seq("ccc"))
+      assert(metrics.schemas.get("ccc") == histo.metadata)
+    }
+
     // scalafix:on StoreGaugesAsMemberVariables
   }
 
   testMetricsStatsReceiver(new PreSchemaCtx())
   testMetricsStatsReceiver(new SchemaCtx())
+
+  test("expressions are reloaded with fully scoped names") {
+    val metrics = Metrics.createDetached()
+    val sr = new MetricsStatsReceiver(metrics)
+
+    val aCounter = sr.scope("test").counter("a")
+    val bHisto = sr.scope("test").stat("b")
+    val cGauge = sr.scope(("test")).addGauge("c") { 1 }
+
+    val expression = ExpressionSchema(
+      "test_expression",
+      Expression(aCounter.metadata).plus(Expression(bHisto.metadata, Left(Expression.Min))
+        .plus(Expression(cGauge.metadata)))
+    ).register()
+
+    // what we expected as hydrated metric builders
+    val aaSchema =
+      MetricBuilder(name = Seq("test", "a"), metricType = CounterType, statsReceiver = sr)
+    val bbSchema =
+      MetricBuilder(
+        name = Seq("test", "b"),
+        percentiles = BucketedHistogram.DefaultQuantiles,
+        metricType = HistogramType,
+        statsReceiver = sr)
+    val ccSchema =
+      MetricBuilder(name = Seq("test", "c"), metricType = GaugeType, statsReceiver = sr)
+
+    val expected_expression = ExpressionSchema(
+      "test_expression",
+      Expression(aaSchema).plus(
+        Expression(bbSchema, Left(Expression.Min)).plus(Expression(ccSchema))))
+
+    assert(
+      metrics.expressions
+        .get(ExpressionSchemaKey("test_expression", None, Seq())).expr == expected_expression.expr)
+  }
+
+  test(
+    "expressions with different serviceNames or different namespaces are stored without clobbering each other") {
+    val metrics = Metrics.createDetached()
+    val sr = new MetricsStatsReceiver(metrics)
+    val exporter = new MetricsExporter(metrics)
+    val aCounter =
+      MetricBuilder(name = Seq("a"), metricType = CounterType, statsReceiver = sr)
+
+    val expression = ExpressionSchema("test_expression", Expression(aCounter))
+      .register()
+    assert(exporter.expressions.keySet.size == 1)
+
+    val expressionWithServiceName = ExpressionSchema("test_expression", Expression(aCounter))
+      .withServiceName("thrift")
+      .register()
+    assert(exporter.expressions.keySet.size == 2)
+
+    val expressionWithNamespace = ExpressionSchema("test_expression", Expression(aCounter))
+      .withNamespace("a", "b")
+      .register()
+    assert(exporter.expressions.keySet.size == 3)
+
+    val expressionWithNamespaceAndServiceName =
+      ExpressionSchema("test_expression", Expression(aCounter))
+        .withNamespace("a", "b").withServiceName("thrift")
+        .register()
+    assert(exporter.expressions.keySet.size == 4)
+  }
+
 }

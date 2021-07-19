@@ -11,9 +11,9 @@ import com.twitter.finagle.stats.{InMemoryHostStatsReceiver, InMemoryStatsReceiv
 import com.twitter.util.{Activity, Await, Event, Future, Time, Var}
 import java.net.{InetAddress, InetSocketAddress}
 import org.scalatest.concurrent.{Eventually, IntegrationPatience}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class LoadBalancerFactoryTest extends FunSuite with Eventually with IntegrationPatience {
+class LoadBalancerFactoryTest extends AnyFunSuite with Eventually with IntegrationPatience {
   val echoService = Service.mk[String, String](Future.value(_))
 
   trait PerHostFlagCtx extends App {
@@ -366,5 +366,42 @@ class LoadBalancerFactoryTest extends FunSuite with Eventually with IntegrationP
     )
 
     assert(augmentedAddresses == eps)
+  }
+  test("does not wrap new Balancer in a Traffic Distributor when toggle is set") {
+    com.twitter.finagle.toggle.flag.overrides
+      .let("com.twitter.finagle.loadbalancer.WeightedAperture", 1.0) {
+
+        val endpoint: Stack[ServiceFactory[String, String]] =
+          Stack.leaf(
+            Stack.Role("endpoint"),
+            ServiceFactory.const[String, String](Service.mk[String, String](req => ???))
+          )
+
+        var eps: Set[Address] = Set.empty
+
+        val mockBalancer = new LoadBalancerFactory {
+
+          override def supportsWeighted: Boolean = true
+
+          def newBalancer[Req, Rep](
+            endpoints: Activity[IndexedSeq[EndpointFactory[Req, Rep]]],
+            emptyException: NoBrokersAvailableException,
+            params: Stack.Params
+          ): ServiceFactory[Req, Rep] = {
+            eps = endpoints.sample().toSet.map { ep: EndpointFactory[_, _] => ep.address }
+            ServiceFactory.const(Service.mk(_ => ???))
+          }
+        }
+
+        val stack = LoadBalancerFactory.module[String, String].toStack(endpoint)
+
+        val params = Stack.Params.empty +
+          LoadBalancerFactory.Param(mockBalancer) +
+          LoadBalancerFactory.ManageWeights(true)
+
+        val a: ServiceFactory[String, String] = stack.make(params)
+
+        assert(!a.isInstanceOf[TrafficDistributor[String, String]])
+      }
   }
 }

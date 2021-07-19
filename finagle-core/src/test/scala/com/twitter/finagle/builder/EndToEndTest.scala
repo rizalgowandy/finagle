@@ -10,9 +10,9 @@ import com.twitter.finagle.stats.InMemoryStatsReceiver
 import com.twitter.finagle.tracing.Trace
 import com.twitter.util._
 import java.net.{InetAddress, InetSocketAddress}
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-class EndToEndTest extends FunSuite {
+class EndToEndTest extends AnyFunSuite {
 
   test("IndividualRequestTimeoutException should include RemoteInfo") {
     val timer = new MockTimer
@@ -202,11 +202,9 @@ class EndToEndTest extends FunSuite {
       def apply(request: String) = new Promise[String]
     }
     val address = new InetSocketAddress(InetAddress.getLoopbackAddress, 0)
-    val server = ServerBuilder()
-      .stack(StringServer.server)
-      .bindTo(address)
-      .name("FinagleServer")
-      .build(never)
+    val server = StringServer.server
+      .withLabel("FinagleServer")
+      .serve(address, never)
 
     val mem = new InMemoryStatsReceiver
     val client = {
@@ -276,11 +274,9 @@ class EndToEndTest extends FunSuite {
       def apply(request: String) = Future.value("pong")
     }
     val address = new InetSocketAddress(InetAddress.getLoopbackAddress, 0)
-    val server = ServerBuilder()
-      .stack(StringServer.server)
-      .bindTo(address)
-      .name("FinagleServer")
-      .build(always)
+    val server = StringServer.server
+      .withLabel("FinagleServer")
+      .serve(address, always)
 
     val mem = new InMemoryStatsReceiver
     val client = {

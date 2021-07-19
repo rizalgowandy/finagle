@@ -9,7 +9,7 @@ import com.twitter.finagle.client.{
 import com.twitter.finagle.context.Contexts
 import com.twitter.finagle.context.RemoteInfo.Upstream
 import com.twitter.finagle.filter.{ClientExceptionTracingFilter => ExceptionTracingFilter}
-import com.twitter.finagle.mux.transport.{MuxFailure, OpportunisticTls}
+import com.twitter.finagle.mux.transport.MuxFailure
 import com.twitter.finagle.mux.{OpportunisticTlsParams, WithCompressionPreferences}
 import com.twitter.finagle.naming.BindingFactory
 import com.twitter.finagle.param.{
@@ -21,6 +21,7 @@ import com.twitter.finagle.param.{
 }
 import com.twitter.finagle.server.{BackupRequest, StackBasedServer, StackServer}
 import com.twitter.finagle.service._
+import com.twitter.finagle.ssl.OpportunisticTls
 import com.twitter.finagle.stats.{
   ClientStatsReceiver,
   ExceptionStatsHandler,
@@ -167,7 +168,7 @@ object ThriftMux
   /**
    * Base [[com.twitter.finagle.Stack.Params]] for ThriftMux servers.
    */
-  val BaseServerParams: Stack.Params = Mux.Server.params + ProtocolLibrary("thriftmux")
+  def BaseServerParams: Stack.Params = Mux.Server.params + ProtocolLibrary("thriftmux")
 
   object Client extends ThriftClient {
 
@@ -575,6 +576,16 @@ object ThriftMux
      */
     def withProtocolFactory(pf: TProtocolFactory): Server =
       configured(Thrift.param.ProtocolFactory(pf))
+
+    /**
+     * Configure the service class that may be used with this server to
+     * collect instrumentation metadata. This is not necessary to run a
+     * service.
+     *
+     * @note that when using the `.serveIface` methods this is unnecessary.
+     */
+    def withServiceClass(clazz: Class[_]): Server =
+      configured(Thrift.param.ServiceClass(Some(clazz)))
 
     /**
      * Produce a [[com.twitter.finagle.ThriftMux.Server]] using the provided stack.
